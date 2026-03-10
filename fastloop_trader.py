@@ -369,6 +369,63 @@ def fetch_orderbook_summary(clob_token_ids):
 # =============================================================================
 
 def discover_fast_market_markets(asset="BTC", window="5m"):
+    """
+    Find active fast markets via Simmer API first.
+    If Simmer returns no usable live candidates, also query Gamma and merge results.
+    """
+    markets = []
+
+    # Try Simmer first
+    try:
+        client = get_client()
+        sdk_markets = client.get_fast_markets(asset=asset, window=window, limit=50)
+        if sdk_markets:
+            for m in sdk_markets:
+                end_time = _parse_resolves_at(m.resolves_at) if getattr(m, "resolves_at", None) else None
+                clob_tokens = [m.polymarket_token_id] if getattr(m, "polymarket_token_id", None) else []
+                if getattr(m, "polymarket_no_token_id", None):
+                    clob_tokens.append(m.polymarket_no_token_id)
+
+                markets.append({
+                    "question": m.question,
+                    "market_id": m.id,
+                    "end_time": end_time,
+                    "clob_token_ids": clob_tokens,
+                    "is_live_now": getattr(m, "is_live_now", None),
+                    "spread_cents": getattr(m, "spread_cents", None),
+                    "liquidity_tier": getattr(m, "liquidity_tier", None),
+                    "external_price_yes": getattr(m, "external_price_yes", None),
+                    "fee_rate_bps": getattr(m, "fee_rate_bps", 0),
+                    "source": "simmer",
+                })
+    except Exception as e:
+        print(f"  ⚠️  Simmer fast-markets API failed ({e})")
+
+    # Check whether Simmer gave us anything actually live
+    now = datetime.now(timezone.utc)
+    simmer_live = []
+    for m in markets:
+        inferred_live, remaining = _infer_market_live(m, now)
+        simmer_flag = m.get("is_live_now")
+        live_now = simmer_flag is True or inferred_live
+        if live_now and remaining is not None and remaining > MIN_TIME_REMAINING:
+            simmer_live.append(m)
+
+    if simmer_live:
+        return markets
+
+    print("  ⚠️  Simmer returned no live candidates — falling back to Gamma")
+
+    gamma_markets = _discover_via_gamma(asset, window)
+
+    # Merge without duplicating identical questions
+    seen = set((m.get("question"), m.get("end_time")) for m in markets)
+    for gm in gamma_markets:
+        key = (gm.get("question"), gm.get("end_time"))
+        if key not in seen:
+            markets.append(gm)
+
+    return markets
     """Find active fast markets via Simmer API. Falls back to Gamma."""
     try:
         client = get_client()
