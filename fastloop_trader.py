@@ -683,6 +683,12 @@ def calculate_position_size(max_size, smart_sizing=False):
 def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=False,
                              smart_sizing=False, quiet=False):
     """Run one cycle of the fast market trading strategy."""
+    global _automaton_reported
+
+    def log(msg, force=False):
+        if not quiet or force:
+            print(msg)
+    """Run one cycle of the fast market trading strategy."""
 
     def log(msg, force=False):
         if not quiet or force:
