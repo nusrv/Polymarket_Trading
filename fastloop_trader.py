@@ -838,8 +838,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
                     "skip_reason": ", ".join(dict.fromkeys(skip_reasons)),
                 }
                 print(json.dumps({"automaton": report}))
-                global _automaton_reported
-                _automaton_reported = True
+                _automaton_reported = True  
             return
 
     clob_tokens = best.get("clob_token_ids", [])
@@ -1052,7 +1051,6 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         print(f"  Action: {'PAPER' if dry_run else ('TRADED' if total_trades else 'FAILED')}")
 
     if os.environ.get("AUTOMATON_MANAGED"):
-        global _automaton_reported
         amount = round(position_size, 2) if total_trades > 0 else 0
         report = {
             "signals": 1,
