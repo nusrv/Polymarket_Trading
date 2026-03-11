@@ -430,6 +430,14 @@ def discover_fast_market_markets(asset="BTC", window="5m"):
             simmer_live.append(m)
 
     if simmer_live:
+        print("\nDEBUG MARKET SAMPLE:")
+        for m in markets[:15]:
+            print({
+                "question": m.get("question"),
+                "end_time": str(m.get("end_time")),
+                "is_live_now": m.get("is_live_now"),
+                "source": m.get("source"),
+            })
         return markets
 
     print("  ⚠️  Simmer returned no live candidates — falling back to Gamma")
@@ -440,6 +448,15 @@ def discover_fast_market_markets(asset="BTC", window="5m"):
         key = (gm.get("question"), gm.get("end_time"))
         if key not in seen:
             markets.append(gm)
+
+    print("\nDEBUG MARKET SAMPLE:")
+    for m in markets[:15]:
+        print({
+            "question": m.get("question"),
+            "end_time": str(m.get("end_time")),
+            "is_live_now": m.get("is_live_now"),
+            "source": m.get("source"),
+        })
 
     return markets
 
@@ -743,8 +760,6 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         log(f"  No live tradeable markets among {len(markets)} found — waiting for next window")
         print(f"📊 Summary: No tradeable markets (0/{len(markets)} live with enough time)")
         return
-
-    skip_reasons = []
 
     end_time = best.get("end_time")
     remaining = (end_time - datetime.now(timezone.utc)).total_seconds() if end_time else 0
