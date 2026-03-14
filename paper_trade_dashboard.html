@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Paper Trade Dashboard</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --panel: #131a2e;
+      --panel-2: #1a2340;
+      --text: #e9eefc;
+      --muted: #9fb0d9;
+      --good: #35c759;
+      --bad: #ff6b6b;
+      --warn: #ffd166;
+      --border: #2b3864;
+      --accent: #6ea8fe;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, Arial, sans-serif;
+      background: linear-gradient(180deg, #08101d 0%, #0d1430 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 30px;
+    }
+    p.sub {
+      margin: 0 0 20px;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .card {
+      background: rgba(19, 26, 46, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 16px;
+      box-shadow: 0 8px 30px rgba(0,0,0,0.22);
+    }
+    .label {
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .value {
+      font-size: 28px;
+      font-weight: 700;
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr 1fr auto auto;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    input, select, button, textarea {
+      width: 100%;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 12px 14px;
+      font-size: 14px;
+    }
+    button {
+      cursor: pointer;
+      font-weight: 600;
+      transition: transform .06s ease, opacity .2s ease;
+    }
+    button:hover { opacity: 0.95; }
+    button:active { transform: translateY(1px); }
+    .btn-primary { background: #1f6feb; }
+    .btn-secondary { background: #263453; }
+    .panel {
+      background: rgba(19, 26, 46, 0.95);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 16px;
+      margin-bottom: 18px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 12px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .tag {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .yes { background: rgba(53,199,89,0.15); color: var(--good); }
+    .no { background: rgba(255,107,107,0.15); color: var(--bad); }
+    .paper { background: rgba(110,168,254,0.15); color: var(--accent); }
+    .skip { background: rgba(255,209,102,0.15); color: var(--warn); }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .hint {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 10px;
+      line-height: 1.5;
+    }
+    .status-good { color: var(--good); }
+    .status-bad { color: var(--bad); }
+    .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+    @media (max-width: 960px) {
+      .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .toolbar { grid-template-columns: 1fr; }
+      .row { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Paper Trade Dashboard</h1>
+    <p class="sub">Track cron-job runs, paper trades, skips, and signal quality from your Polymarket bot.</p>
+
+    <div class="grid">
+      <div class="card"><div class="label">Total Runs</div><div class="value" id="totalRuns">0</div></div>
+      <div class="card"><div class="label">Paper Trades</div><div class="value" id="paperTrades">0</div></div>
+      <div class="card"><div class="label">Skipped Runs</div><div class="value" id="skippedRuns">0</div></div>
+      <div class="card"><div class="label">Trade Rate</div><div class="value" id="tradeRate">0%</div></div>
+    </div>
+
+    <div class="toolbar">
+      <input id="searchBox" placeholder="Search market / reason / side" />
+      <select id="typeFilter">
+        <option value="all">All outcomes</option>
+        <option value="paper">Paper trades only</option>
+        <option value="skip">Skips only</option>
+      </select>
+      <select id="sideFilter">
+        <option value="all">All sides</option>
+        <option value="YES">YES only</option>
+        <option value="NO">NO only</option>
+      </select>
+      <button class="btn-secondary" id="exportBtn">Export JSON</button>
+      <button class="btn-primary" id="seedBtn">Load demo data</button>
+    </div>
+
+    <div class="row">
+      <div class="panel">
+        <h3 style="margin-top:0">Add one parsed run</h3>
+        <textarea id="jsonInput" rows="10" placeholder='Paste one JSON item, for example:
+{
+  "timestamp": "2026-03-14T14:20:00Z",
+  "market": "Bitcoin Up or Down - March 14, 10:20AM-10:25AM ET",
+  "status": "paper",
+  "side": "NO",
+  "yes_price": 0.685,
+  "momentum_pct": -0.036,
+  "divergence": 0.235,
+  "size_usd": 10,
+  "shares": 21.5,
+  "reason": "paper trade"
+}'></textarea>
+        <div style="display:flex; gap:12px; margin-top:12px;">
+          <button class="btn-primary" id="addJsonBtn">Add record</button>
+          <button class="btn-secondary" id="clearBtn">Clear all</button>
+        </div>
+        <div class="hint">
+          Best use: update your bot later so each cron job writes one JSON line into a log file. This dashboard can then load that file or pasted records.
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3 style="margin-top:0">Recommended bot log structure</h3>
+        <div class="mono small">{
+  "timestamp": "2026-03-14T14:20:00Z",
+  "market": "Bitcoin Up or Down - ...",
+  "status": "paper",
+  "side": "NO",
+  "yes_price": 0.685,
+  "momentum_pct": -0.036,
+  "divergence": 0.235,
+  "size_usd": 10,
+  "shares": 21.5,
+  "reason": "paper trade",
+  "source_used": "binance"
+}</div>
+        <div class="hint">
+          Status values: <span class="status-good">paper</span> or <span class="status-bad">skip</span>. This keeps analysis across different cron jobs clean and searchable.
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3 style="margin-top:0">Run history</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Market</th>
+            <th>Result</th>
+            <th>Side</th>
+            <th>YES price</th>
+            <th>Momentum</th>
+            <th>Divergence</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody id="historyBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const STORAGE_KEY = 'paper_trade_dashboard_records_v1';
+
+    const sampleData = [
+      {
+        timestamp: '2026-03-14T14:20:00Z',
+        market: 'Bitcoin Up or Down - March 14, 10:20AM-10:25AM ET',
+        status: 'paper',
+        side: 'NO',
+        yes_price: 0.685,
+        momentum_pct: -0.036,
+        divergence: 0.235,
+        size_usd: 10,
+        shares: 21.5,
+        reason: 'paper trade',
+        source_used: 'binance'
+      },
+      {
+        timestamp: '2026-03-14T14:25:00Z',
+        market: 'Bitcoin Up or Down - March 14, 10:25AM-10:30AM ET',
+        status: 'skip',
+        side: '',
+        yes_price: 0.49,
+        momentum_pct: -0.012,
+        divergence: 0.00,
+        size_usd: 0,
+        shares: 0,
+        reason: 'market already priced in',
+        source_used: 'binance'
+      },
+      {
+        timestamp: '2026-03-14T14:30:00Z',
+        market: 'Bitcoin Up or Down - March 14, 10:30AM-10:35AM ET',
+        status: 'skip',
+        side: '',
+        yes_price: 0.52,
+        momentum_pct: 0.009,
+        divergence: 0.00,
+        size_usd: 0,
+        shares: 0,
+        reason: 'momentum too weak',
+        source_used: 'binance'
+      }
+    ];
+
+    function loadRecords() {
+      try {
+        return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+      } catch {
+        return [];
+      }
+    }
+
+    function saveRecords(records) {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    }
+
+    function fmtPct(v) {
+      if (v === '' || v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+      return `${Number(v).toFixed(3)}%`;
+    }
+
+    function fmtNum(v, digits = 3) {
+      if (v === '' || v === null || v === undefined || Number.isNaN(Number(v))) return '—';
+      return Number(v).toFixed(digits);
+    }
+
+    function render() {
+      const records = loadRecords();
+      const q = document.getElementById('searchBox').value.trim().toLowerCase();
+      const typeFilter = document.getElementById('typeFilter').value;
+      const sideFilter = document.getElementById('sideFilter').value;
+
+      let filtered = records.filter(r => {
+        const hay = `${r.market || ''} ${r.reason || ''} ${r.side || ''}`.toLowerCase();
+        const matchesSearch = !q || hay.includes(q);
+        const matchesType = typeFilter === 'all' || r.status === typeFilter;
+        const matchesSide = sideFilter === 'all' || (r.side || '').toUpperCase() === sideFilter;
+        return matchesSearch && matchesType && matchesSide;
+      });
+
+      filtered.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+      const totalRuns = records.length;
+      const paperTrades = records.filter(r => r.status === 'paper').length;
+      const skippedRuns = records.filter(r => r.status === 'skip').length;
+      const tradeRate = totalRuns ? ((paperTrades / totalRuns) * 100).toFixed(1) : '0.0';
+
+      document.getElementById('totalRuns').textContent = totalRuns;
+      document.getElementById('paperTrades').textContent = paperTrades;
+      document.getElementById('skippedRuns').textContent = skippedRuns;
+      document.getElementById('tradeRate').textContent = `${tradeRate}%`;
+
+      const tbody = document.getElementById('historyBody');
+      tbody.innerHTML = '';
+
+      for (const r of filtered) {
+        const tr = document.createElement('tr');
+        const resultClass = r.status === 'paper' ? 'paper' : 'skip';
+        const sideClass = (r.side || '').toUpperCase() === 'YES' ? 'yes' : ((r.side || '').toUpperCase() === 'NO' ? 'no' : 'skip');
+        tr.innerHTML = `
+          <td>${r.timestamp ? new Date(r.timestamp).toLocaleString() : '—'}</td>
+          <td>${r.market || '—'}</td>
+          <td><span class="tag ${resultClass}">${r.status || '—'}</span></td>
+          <td>${r.side ? `<span class="tag ${sideClass}">${r.side}</span>` : '—'}</td>
+          <td>${fmtNum(r.yes_price)}</td>
+          <td>${fmtPct(r.momentum_pct)}</td>
+          <td>${fmtNum(r.divergence)}</td>
+          <td>${r.reason || '—'}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+
+    document.getElementById('addJsonBtn').addEventListener('click', () => {
+      const raw = document.getElementById('jsonInput').value.trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        const records = loadRecords();
+        records.push(parsed);
+        saveRecords(records);
+        document.getElementById('jsonInput').value = '';
+        render();
+      } catch (e) {
+        alert('Invalid JSON. Please paste one valid JSON object.');
+      }
+    });
+
+    document.getElementById('clearBtn').addEventListener('click', () => {
+      if (!confirm('Clear all saved dashboard records?')) return;
+      saveRecords([]);
+      render();
+    });
+
+    document.getElementById('seedBtn').addEventListener('click', () => {
+      saveRecords(sampleData);
+      render();
+    });
+
+    document.getElementById('exportBtn').addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(loadRecords(), null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'paper_trade_records.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    document.getElementById('searchBox').addEventListener('input', render);
+    document.getElementById('typeFilter').addEventListener('change', render);
+    document.getElementById('sideFilter').addEventListener('change', render);
+
+    render();
+  </script>
+</body>
+</html>
+```
+
+Then add this as your next deployment step in the repo:
+
+## `Procfile`
+
+Use this if you want the page itself served as a simple static entry later through another service or via a tiny server. For now, keep your current bot Procfile unchanged if the bot must keep running.
+
+If you want the dashboard in the same repo as a file only, you do **not** need to change your bot Procfile yet.
+
+## Best next practical move
+
+Keep this HTML file in the repo now. Then, in the next step, I recommend I generate one more full file for you: a small Python logger helper that writes each cron-job result into a JSON lines file that this page can lat
