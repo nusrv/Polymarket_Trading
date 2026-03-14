@@ -5,10 +5,10 @@ Simmer FastLoop Trading Skill
 Trades Polymarket BTC 5-minute fast markets using CEX price momentum.
 Default signal: Binance BTCUSDT candles. Falls back to Coinbase if Binance fails.
 
-This version adds JSONL logging:
-- one record per cron run
-- paper trades and skips are both logged
-- log file: paper_trade_log.jsonl
+This version adds console JSON logging:
+- one JSON record per cron run
+- paper trades and skips are both logged to stdout
+- easy to copy from Railway logs into your dashboard
 """
 
 import os
@@ -170,17 +170,28 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _data_dir(skill_file):
-    from pathlib import Path
-    return Path(skill_file).parent
+def emit_console_record(record):
+    payload = {
+        "paper_trade_record": {
+            "timestamp": _now_iso(),
+            "asset": ASSET,
+            "window": WINDOW,
+            "entry_threshold": ENTRY_THRESHOLD,
+            "min_momentum_pct": MIN_MOMENTUM_PCT,
+            "max_position_usd": MAX_POSITION_USD,
+            "lookback_minutes": LOOKBACK_MINUTES,
+            "min_time_remaining": MIN_TIME_REMAINING,
+            "volume_confidence": VOLUME_CONFIDENCE,
+            "daily_budget": DAILY_BUDGET,
+            **record,
+        }
+    }
+    print(json.dumps(payload, ensure_ascii=False))
 
 
 def _get_spend_path(skill_file):
-    return _data_dir(skill_file) / "daily_spend.json"
-
-
-def _get_run_log_path(skill_file):
-    return _data_dir(skill_file) / "paper_trade_log.jsonl"
+    from pathlib import Path
+    return Path(skill_file).parent / "daily_spend.json"
 
 
 def _load_daily_spend(skill_file):
@@ -201,28 +212,6 @@ def _save_daily_spend(skill_file, spend_data):
     spend_path = _get_spend_path(skill_file)
     with open(spend_path, "w") as f:
         json.dump(spend_data, f, indent=2)
-
-
-def _write_run_log(skill_file, record):
-    """
-    Append one JSON object per line.
-    """
-    path = _get_run_log_path(skill_file)
-    base = {
-        "timestamp": _now_iso(),
-        "asset": ASSET,
-        "window": WINDOW,
-        "entry_threshold": ENTRY_THRESHOLD,
-        "min_momentum_pct": MIN_MOMENTUM_PCT,
-        "max_position_usd": MAX_POSITION_USD,
-        "lookback_minutes": LOOKBACK_MINUTES,
-        "min_time_remaining": MIN_TIME_REMAINING,
-        "volume_confidence": VOLUME_CONFIDENCE,
-        "daily_budget": DAILY_BUDGET,
-    }
-    base.update(record)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(base, ensure_ascii=False) + "\n")
 
 
 _client = None
@@ -718,9 +707,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
             print(msg)
 
     def log_skip(reason, **extra):
-        record = {"status": "skip", "reason": reason}
-        record.update(extra)
-        _write_run_log(__file__, record)
+        emit_console_record({"status": "skip", "reason": reason, **extra})
 
     log("⚡ Simmer FastLoop Trading Skill")
     log("=" * 50)
@@ -966,7 +953,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         shares = result.get("shares_bought") or result.get("shares") or 0
         log(f"  ✅ {'[PAPER] ' if result.get('simulated') else ''}Bought {shares:.1f} {side.upper()} shares @ ${price:.3f}", force=True)
 
-        _write_run_log(__file__, {
+        emit_console_record({
             "status": "paper" if result.get("simulated") else "live",
             "market": best.get("question"),
             "side": side.upper(),
