@@ -172,21 +172,20 @@ def _now_iso():
 
 def emit_console_record(record):
     payload = {
-        "paper_trade_record": {
-            "timestamp": _now_iso(),
-            "asset": ASSET,
-            "window": WINDOW,
-            "entry_threshold": ENTRY_THRESHOLD,
-            "min_momentum_pct": MIN_MOMENTUM_PCT,
-            "max_position_usd": MAX_POSITION_USD,
-            "lookback_minutes": LOOKBACK_MINUTES,
-            "min_time_remaining": MIN_TIME_REMAINING,
-            "volume_confidence": VOLUME_CONFIDENCE,
-            "daily_budget": DAILY_BUDGET,
-            **record,
-        }
+        "timestamp": _now_iso(),
+        "asset": ASSET,
+        "window": WINDOW,
+        "entry_threshold": ENTRY_THRESHOLD,
+        "min_momentum_pct": MIN_MOMENTUM_PCT,
+        "max_position_usd": MAX_POSITION_USD,
+        "lookback_minutes": LOOKBACK_MINUTES,
+        "min_time_remaining": MIN_TIME_REMAINING,
+        "volume_confidence": VOLUME_CONFIDENCE,
+        "daily_budget": DAILY_BUDGET,
+        **record,
     }
-    print(json.dumps(payload, ensure_ascii=False))
+    print("PAPER_TRADE_JSON::" + json.dumps(payload, ensure_ascii=False))
+
 
 
 def _get_spend_path(skill_file):
