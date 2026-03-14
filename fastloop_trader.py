@@ -4,6 +4,11 @@ Simmer FastLoop Trading Skill
 
 Trades Polymarket BTC 5-minute fast markets using CEX price momentum.
 Default signal: Binance BTCUSDT candles. Falls back to Coinbase if Binance fails.
+
+This version improves market selection by:
+- fetching more markets from Simmer/Gamma
+- focusing on markets near "now"
+- explicitly preferring the market whose end_time is closest ahead of now
 """
 
 import os
@@ -46,7 +51,6 @@ CONFIG_SCHEMA = {
 
 TRADE_SOURCE = "sdk:fastloop"
 SKILL_SLUG = "polymarket-fast-loop"
-_automaton_reported = False
 SMART_SIZING_PCT = 0.05
 MIN_SHARES_PER_ORDER = 5
 MAX_SPREAD_PCT = 0.10
@@ -338,7 +342,7 @@ def _discover_via_gamma(asset="BTC", window="5m"):
     patterns = ASSET_PATTERNS.get(asset, ASSET_PATTERNS["BTC"])
     url = (
         "https://gamma-api.polymarket.com/markets"
-        "?limit=100&closed=false&tag=crypto&order=endDate&ascending=true"
+        "?limit=500&closed=false&tag=crypto&order=endDate&ascending=true"
     )
     result = _api_request(url)
     if not result or (isinstance(result, dict) and result.get("error")):
@@ -392,12 +396,55 @@ def _infer_market_live(market, now=None):
     return inferred_live, remaining
 
 
+def _normalize_and_focus_markets(markets, window):
+    """
+    Keep markets near now.
+    Priority:
+    1) markets ending within [-1 window, +4 windows]
+    2) if none, markets ending within [-1 window, +12 windows]
+    3) else nearest 100 by end_time
+    """
+    now = datetime.now(timezone.utc)
+    window_seconds = _window_seconds.get(window, 300)
+
+    clean = [m for m in markets if m.get("end_time") is not None]
+    clean.sort(key=lambda m: m["end_time"])
+
+    tight = []
+    loose = []
+
+    for m in clean:
+        remaining = (m["end_time"] - now).total_seconds()
+        if -window_seconds <= remaining <= (window_seconds * 4):
+            tight.append(m)
+        if -window_seconds <= remaining <= (window_seconds * 12):
+            loose.append(m)
+
+    if tight:
+        return tight
+    if loose:
+        return loose
+    return clean[:100]
+
+
+def _dedupe_markets(markets):
+    deduped = {}
+    for m in markets:
+        key = (
+            m.get("question"),
+            str(m.get("end_time")),
+            m.get("source"),
+        )
+        deduped[key] = m
+    return list(deduped.values())
+
+
 def discover_fast_market_markets(asset="BTC", window="5m"):
     markets = []
 
     try:
         client = get_client()
-        sdk_markets = client.get_fast_markets(asset=asset, window=window, limit=50)
+        sdk_markets = client.get_fast_markets(asset=asset, window=window, limit=300)
         if sdk_markets:
             for m in sdk_markets:
                 end_time = _parse_resolves_at(m.resolves_at) if getattr(m, "resolves_at", None) else None
@@ -420,37 +467,14 @@ def discover_fast_market_markets(asset="BTC", window="5m"):
     except Exception as e:
         print(f"  ⚠️  Simmer fast-markets API failed ({e})")
 
-    now = datetime.now(timezone.utc)
-    simmer_live = []
-    for m in markets:
-        inferred_live, remaining = _infer_market_live(m, now)
-        simmer_flag = m.get("is_live_now")
-        live_now = simmer_flag is True or inferred_live
-        if live_now and remaining is not None and remaining > MIN_TIME_REMAINING:
-            simmer_live.append(m)
-
-    if simmer_live:
-        print("\nDEBUG MARKET SAMPLE:")
-        for m in markets[:15]:
-            print({
-                "question": m.get("question"),
-                "end_time": str(m.get("end_time")),
-                "is_live_now": m.get("is_live_now"),
-                "source": m.get("source"),
-            })
-        return markets
-
-    print("  ⚠️  Simmer returned no live candidates — falling back to Gamma")
     gamma_markets = _discover_via_gamma(asset, window)
+    markets.extend(gamma_markets)
 
-    seen = set((m.get("question"), m.get("end_time")) for m in markets)
-    for gm in gamma_markets:
-        key = (gm.get("question"), gm.get("end_time"))
-        if key not in seen:
-            markets.append(gm)
+    markets = _dedupe_markets(markets)
+    markets = _normalize_and_focus_markets(markets, window)
 
     print("\nDEBUG MARKET SAMPLE:")
-    for m in markets[:15]:
+    for m in markets[:20]:
         print({
             "question": m.get("question"),
             "end_time": str(m.get("end_time")),
@@ -482,11 +506,24 @@ def find_best_fast_market(markets):
         if live_now and remaining > MIN_TIME_REMAINING:
             candidates.append((remaining, m))
 
-    if not candidates:
-        return None
+    if candidates:
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
 
-    candidates.sort(key=lambda x: x[0])
-    return candidates[0][1]
+    # Fallback: pick the nearest future market if it's close enough
+    nearest_future = []
+    for m in markets:
+        remaining = _remaining_seconds(m, now)
+        if remaining is None:
+            continue
+        if MIN_TIME_REMAINING < remaining <= (_window_seconds.get(WINDOW, 300) * 2):
+            nearest_future.append((remaining, m))
+
+    if nearest_future:
+        nearest_future.sort(key=lambda x: x[0])
+        return nearest_future[0][1]
+
+    return None
 
 
 def get_binance_momentum(symbol="BTCUSDT", lookback_minutes=5):
@@ -676,8 +713,6 @@ def calculate_position_size(max_size, smart_sizing=False):
 
 def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=False,
                              smart_sizing=False, quiet=False):
-    global _automaton_reported
-
     def log(msg, force=False):
         if not quiet or force:
             print(msg)
@@ -737,7 +772,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         now = datetime.now(timezone.utc)
         window_seconds = _window_seconds.get(WINDOW, 300)
 
-        for m in markets:
+        for m in markets[:40]:
             remaining = _remaining_seconds(m, now)
             simmer_live = m.get("is_live_now")
             inferred_live, _ = _infer_market_live(m, now)
