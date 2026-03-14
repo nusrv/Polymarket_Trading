@@ -5,10 +5,12 @@ Simmer FastLoop Trading Skill
 Trades Polymarket BTC 5-minute fast markets using CEX price momentum.
 Default signal: Binance BTCUSDT candles. Falls back to Coinbase if Binance fails.
 
-This version improves market selection by:
-- fetching more markets from Simmer/Gamma
-- focusing on markets near "now"
-- explicitly preferring the market whose end_time is closest ahead of now
+This version:
+- supports SIMMER_FASTLOOP_* env vars
+- fetches a larger set of markets from Simmer + Gamma
+- keeps a broader near-now window instead of over-filtering
+- chooses the nearest valid live candidate
+- prints a helpful debug sample
 """
 
 import os
@@ -73,7 +75,7 @@ COINBASE_PRODUCTS = {
     "SOL": "SOL-USD",
 }
 
-_window_seconds = {"5m": 300, "15m": 900, "1h": 3600}
+WINDOW_SECONDS = {"5m": 300, "15m": 900, "1h": 3600}
 
 from simmer_sdk.skill import load_config, update_config, get_config_path
 
@@ -87,8 +89,8 @@ def _env_bool(name):
 
 def _env_alias_override(cfg, key, aliases, cast):
     for env_name in aliases:
-        if env_name in os.environ and os.environ.get(env_name) not in ("", None):
-            raw = os.environ.get(env_name)
+        raw = os.environ.get(env_name)
+        if raw not in (None, ""):
             try:
                 if cast == bool:
                     cfg[key] = _env_bool(env_name)
@@ -146,22 +148,21 @@ _env_alias_override(cfg, "daily_budget", [
 ENTRY_THRESHOLD = cfg["entry_threshold"]
 MIN_MOMENTUM_PCT = cfg["min_momentum_pct"]
 MAX_POSITION_USD = cfg["max_position"]
-_automaton_max = os.environ.get("AUTOMATON_MAX_BET")
-if _automaton_max:
-    MAX_POSITION_USD = min(MAX_POSITION_USD, float(_automaton_max))
+AUTOMATON_MAX = os.environ.get("AUTOMATON_MAX_BET")
+if AUTOMATON_MAX:
+    MAX_POSITION_USD = min(MAX_POSITION_USD, float(AUTOMATON_MAX))
 SIGNAL_SOURCE = cfg["signal_source"]
 LOOKBACK_MINUTES = cfg["lookback_minutes"]
 ASSET = cfg["asset"].upper()
 WINDOW = cfg["window"]
-
-_configured_min_time = cfg["min_time_remaining"]
-if _configured_min_time > 0:
-    MIN_TIME_REMAINING = _configured_min_time
-else:
-    MIN_TIME_REMAINING = max(30, _window_seconds.get(WINDOW, 300) // 10)
-
 VOLUME_CONFIDENCE = cfg["volume_confidence"]
 DAILY_BUDGET = cfg["daily_budget"]
+
+CONFIGURED_MIN_TIME = cfg["min_time_remaining"]
+if CONFIGURED_MIN_TIME > 0:
+    MIN_TIME_REMAINING = CONFIGURED_MIN_TIME
+else:
+    MIN_TIME_REMAINING = max(30, WINDOW_SECONDS.get(WINDOW, 300) // 10)
 
 POLY_FEE_RATE = 0.25
 POLY_FEE_EXPONENT = 2
@@ -228,7 +229,6 @@ def _api_request(url, method="GET", data=None, headers=None, timeout=15):
         req = Request(url, data=body, headers=req_headers, method=method)
         with urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
-
     except HTTPError as e:
         try:
             error_body = json.loads(e.read().decode("utf-8"))
@@ -265,14 +265,13 @@ def fetch_live_midpoint(token_id):
 
 
 def fetch_live_prices(clob_token_ids):
-    if not clob_token_ids or len(clob_token_ids) < 1:
+    if not clob_token_ids:
         return None
-    yes_token = clob_token_ids[0]
-    return fetch_live_midpoint(yes_token)
+    return fetch_live_midpoint(clob_token_ids[0])
 
 
 def fetch_orderbook_summary(clob_token_ids):
-    if not clob_token_ids or len(clob_token_ids) < 1:
+    if not clob_token_ids:
         return None
     yes_token = clob_token_ids[0]
     result = _api_request(f"{CLOB_API}/book?token_id={quote(str(yes_token))}", timeout=5)
@@ -318,7 +317,6 @@ def _parse_resolves_at(resolves_at_str):
 
 def _parse_fast_market_end_time(question):
     import re
-
     pattern = r'(\w+ \d+),.*?-\s*(\d{1,2}:\d{2}(?:AM|PM))\s*ET'
     match = re.search(pattern, question)
     if not match:
@@ -332,8 +330,7 @@ def _parse_fast_market_end_time(question):
         dt_str = f"{date_str} {year} {time_str}"
         dt = datetime.strptime(dt_str, "%B %d %Y %I:%M%p")
         et = ZoneInfo("America/New_York")
-        dt = dt.replace(tzinfo=et).astimezone(timezone.utc)
-        return dt
+        return dt.replace(tzinfo=et).astimezone(timezone.utc)
     except Exception:
         return None
 
@@ -354,27 +351,27 @@ def _discover_via_gamma(asset="BTC", window="5m"):
         slug = m.get("slug", "")
         matches_window = f"-{window}-" in slug
         if any(p in q for p in patterns) and matches_window:
-            closed = m.get("closed", False)
-            if not closed and slug:
-                end_time = _parse_fast_market_end_time(m.get("question", ""))
-                clob_tokens_raw = m.get("clobTokenIds", "[]")
-                if isinstance(clob_tokens_raw, str):
-                    try:
-                        clob_tokens = json.loads(clob_tokens_raw)
-                    except (json.JSONDecodeError, ValueError):
-                        clob_tokens = []
-                else:
-                    clob_tokens = clob_tokens_raw or []
+            if m.get("closed", False):
+                continue
+            end_time = _parse_fast_market_end_time(m.get("question", ""))
+            clob_tokens_raw = m.get("clobTokenIds", "[]")
+            if isinstance(clob_tokens_raw, str):
+                try:
+                    clob_tokens = json.loads(clob_tokens_raw)
+                except (json.JSONDecodeError, ValueError):
+                    clob_tokens = []
+            else:
+                clob_tokens = clob_tokens_raw or []
 
-                markets.append({
-                    "question": m.get("question", ""),
-                    "slug": slug,
-                    "end_time": end_time,
-                    "clob_token_ids": clob_tokens,
-                    "fee_rate_bps": int(m.get("fee_rate_bps") or m.get("feeRateBps") or 0),
-                    "source": "gamma",
-                    "is_live_now": None,
-                })
+            markets.append({
+                "question": m.get("question", ""),
+                "slug": slug,
+                "end_time": end_time,
+                "clob_token_ids": clob_tokens,
+                "fee_rate_bps": int(m.get("fee_rate_bps") or m.get("feeRateBps") or 0),
+                "source": "gamma",
+                "is_live_now": None,
+            })
     return markets
 
 
@@ -391,52 +388,39 @@ def _infer_market_live(market, now=None):
     remaining = _remaining_seconds(market, now)
     if remaining is None:
         return False, None
-    window_seconds = _window_seconds.get(WINDOW, 300)
-    inferred_live = 0 < remaining <= window_seconds
-    return inferred_live, remaining
+    window_seconds = WINDOW_SECONDS.get(WINDOW, 300)
+    return 0 < remaining <= window_seconds, remaining
 
 
-def _normalize_and_focus_markets(markets, window):
-    """
-    Keep markets near now.
-    Priority:
-    1) markets ending within [-1 window, +4 windows]
-    2) if none, markets ending within [-1 window, +12 windows]
-    3) else nearest 100 by end_time
-    """
+def _dedupe_markets(markets):
+    seen = {}
+    for m in markets:
+        key = (m.get("question"), str(m.get("end_time")))
+        if key not in seen:
+            seen[key] = m
+        else:
+            if seen[key].get("source") != "simmer" and m.get("source") == "simmer":
+                seen[key] = m
+    return list(seen.values())
+
+
+def _focus_markets_near_now(markets, window):
     now = datetime.now(timezone.utc)
-    window_seconds = _window_seconds.get(window, 300)
+    window_seconds = WINDOW_SECONDS.get(window, 300)
 
     clean = [m for m in markets if m.get("end_time") is not None]
     clean.sort(key=lambda m: m["end_time"])
 
-    tight = []
-    loose = []
-
+    # Very broad near-now band: 1 full window in the past to 24 windows ahead
+    near_now = []
     for m in clean:
         remaining = (m["end_time"] - now).total_seconds()
-        if -window_seconds <= remaining <= (window_seconds * 4):
-            tight.append(m)
-        if -window_seconds <= remaining <= (window_seconds * 12):
-            loose.append(m)
+        if -window_seconds <= remaining <= (window_seconds * 24):
+            near_now.append(m)
 
-    if tight:
-        return tight
-    if loose:
-        return loose
-    return clean[:100]
-
-
-def _dedupe_markets(markets):
-    deduped = {}
-    for m in markets:
-        key = (
-            m.get("question"),
-            str(m.get("end_time")),
-            m.get("source"),
-        )
-        deduped[key] = m
-    return list(deduped.values())
+    if near_now:
+        return near_now
+    return clean[:150]
 
 
 def discover_fast_market_markets(asset="BTC", window="5m"):
@@ -471,7 +455,7 @@ def discover_fast_market_markets(asset="BTC", window="5m"):
     markets.extend(gamma_markets)
 
     markets = _dedupe_markets(markets)
-    markets = _normalize_and_focus_markets(markets, window)
+    markets = _focus_markets_near_now(markets, window)
 
     print("\nDEBUG MARKET SAMPLE:")
     for m in markets[:20]:
@@ -487,41 +471,30 @@ def discover_fast_market_markets(asset="BTC", window="5m"):
 
 def find_best_fast_market(markets):
     now = datetime.now(timezone.utc)
-    candidates = []
+    live_candidates = []
+    near_future_candidates = []
 
     for m in markets:
         inferred_live, remaining = _infer_market_live(m, now)
         simmer_live = m.get("is_live_now")
 
-        if simmer_live is True:
-            live_now = True
-        elif simmer_live is False:
-            live_now = inferred_live
-        else:
-            live_now = inferred_live
+        live_now = simmer_live is True or inferred_live
 
         if remaining is None:
             continue
 
         if live_now and remaining > MIN_TIME_REMAINING:
-            candidates.append((remaining, m))
+            live_candidates.append((remaining, m))
+        elif MIN_TIME_REMAINING < remaining <= (WINDOW_SECONDS.get(WINDOW, 300) * 2):
+            near_future_candidates.append((remaining, m))
 
-    if candidates:
-        candidates.sort(key=lambda x: x[0])
-        return candidates[0][1]
+    if live_candidates:
+        live_candidates.sort(key=lambda x: x[0])
+        return live_candidates[0][1]
 
-    # Fallback: pick the nearest future market if it's close enough
-    nearest_future = []
-    for m in markets:
-        remaining = _remaining_seconds(m, now)
-        if remaining is None:
-            continue
-        if MIN_TIME_REMAINING < remaining <= (_window_seconds.get(WINDOW, 300) * 2):
-            nearest_future.append((remaining, m))
-
-    if nearest_future:
-        nearest_future.sort(key=lambda x: x[0])
-        return nearest_future[0][1]
+    if near_future_candidates:
+        near_future_candidates.sort(key=lambda x: x[0])
+        return near_future_candidates[0][1]
 
     return None
 
@@ -567,7 +540,6 @@ def get_binance_momentum(symbol="BTCUSDT", lookback_minutes=5):
 
 def get_coinbase_momentum(asset="BTC", lookback_minutes=5):
     product = COINBASE_PRODUCTS.get(asset, "BTC-USD")
-
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(minutes=lookback_minutes + 1)
 
@@ -642,7 +614,6 @@ def import_fast_market_market(slug):
 
     if not result:
         return None, "No response from import endpoint"
-
     if result.get("error"):
         return None, result.get("error", "Unknown error")
 
@@ -707,8 +678,7 @@ def calculate_position_size(max_size, smart_sizing=False):
     balance = portfolio.get("balance_usdc", 0)
     if balance <= 0:
         return max_size
-    smart_size = balance * SMART_SIZING_PCT
-    return min(smart_size, max_size)
+    return min(balance * SMART_SIZING_PCT, max_size)
 
 
 def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=False,
@@ -746,11 +716,11 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     if positions_only:
         log("\n📊 Sprint Positions:")
         positions = get_positions()
-        fast_market_positions = [p for p in positions if "up or down" in (p.get("question", "") or "").lower()]
-        if not fast_market_positions:
+        fast_positions = [p for p in positions if "up or down" in (p.get("question", "") or "").lower()]
+        if not fast_positions:
             log("  No open fast market positions")
         else:
-            for pos in fast_market_positions:
+            for pos in fast_positions:
                 log(f"  • {pos.get('question', 'Unknown')[:60]}")
         return
 
@@ -770,28 +740,14 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     best = find_best_fast_market(markets)
     if not best:
         now = datetime.now(timezone.utc)
-        window_seconds = _window_seconds.get(WINDOW, 300)
-
         for m in markets[:40]:
             remaining = _remaining_seconds(m, now)
-            simmer_live = m.get("is_live_now")
-            inferred_live, _ = _infer_market_live(m, now)
-
             if remaining is None:
                 log(f"  Skipped: {m['question'][:50]}... (no end_time available)")
-                continue
-
-            if simmer_live is False and inferred_live:
-                log(f"  Skipped: {m['question'][:50]}... (Simmer said not live, but timing suggests live; {remaining:.0f}s left)")
-            elif simmer_live is False:
+            elif m.get("is_live_now") is False:
                 log(f"  Skipped: {m['question'][:50]}... (not live yet; {remaining:.0f}s until expiry)")
-            elif remaining <= MIN_TIME_REMAINING:
-                log(f"  Skipped: {m['question'][:50]}... ({remaining:.0f}s left < {MIN_TIME_REMAINING}s min)")
-            elif remaining > window_seconds:
-                log(f"  Skipped: {m['question'][:50]}... (future market; {remaining:.0f}s left > current {window_seconds}s window)")
             else:
-                log(f"  Skipped: {m['question'][:50]}... (unclear state; is_live_now={simmer_live}, {remaining:.0f}s left)")
-
+                log(f"  Skipped: {m['question'][:50]}... ({remaining:.0f}s remaining)")
         log(f"  No live tradeable markets among {len(markets)} found — waiting for next window")
         print(f"📊 Summary: No tradeable markets (0/{len(markets)} live with enough time)")
         return
@@ -818,7 +774,6 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
 
     log(f"\n📈 Fetching {ASSET} price signal ({SIGNAL_SOURCE})...")
     momentum = get_momentum(ASSET, SIGNAL_SOURCE, LOOKBACK_MINUTES)
-
     if not momentum:
         log("  ❌ Failed to fetch price data", force=True)
         return
@@ -911,8 +866,7 @@ if __name__ == "__main__":
     parser.add_argument("--set", action="append", metavar="KEY=VALUE",
                         help="Update config (e.g., --set entry_threshold=0.08)")
     parser.add_argument("--smart-sizing", action="store_true", help="Use portfolio-based position sizing")
-    parser.add_argument("--quiet", "-q", action="store_true",
-                        help="Only output on trades/errors")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Only output on trades/errors")
     args = parser.parse_args()
 
     if args.set:
