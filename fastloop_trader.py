@@ -5,12 +5,10 @@ Simmer FastLoop Trading Skill
 Trades Polymarket BTC 5-minute fast markets using CEX price momentum.
 Default signal: Binance BTCUSDT candles. Falls back to Coinbase if Binance fails.
 
-This version:
-- supports SIMMER_FASTLOOP_* env vars
-- fetches a larger set of markets from Simmer + Gamma
-- keeps a broader near-now window instead of over-filtering
-- chooses the nearest valid live candidate
-- prints a helpful debug sample
+This version adds JSONL logging:
+- one record per cron run
+- paper trades and skips are both logged
+- log file: paper_trade_log.jsonl
 """
 
 import os
@@ -168,9 +166,21 @@ POLY_FEE_RATE = 0.25
 POLY_FEE_EXPONENT = 2
 
 
-def _get_spend_path(skill_file):
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _data_dir(skill_file):
     from pathlib import Path
-    return Path(skill_file).parent / "daily_spend.json"
+    return Path(skill_file).parent
+
+
+def _get_spend_path(skill_file):
+    return _data_dir(skill_file) / "daily_spend.json"
+
+
+def _get_run_log_path(skill_file):
+    return _data_dir(skill_file) / "paper_trade_log.jsonl"
 
 
 def _load_daily_spend(skill_file):
@@ -191,6 +201,28 @@ def _save_daily_spend(skill_file, spend_data):
     spend_path = _get_spend_path(skill_file)
     with open(spend_path, "w") as f:
         json.dump(spend_data, f, indent=2)
+
+
+def _write_run_log(skill_file, record):
+    """
+    Append one JSON object per line.
+    """
+    path = _get_run_log_path(skill_file)
+    base = {
+        "timestamp": _now_iso(),
+        "asset": ASSET,
+        "window": WINDOW,
+        "entry_threshold": ENTRY_THRESHOLD,
+        "min_momentum_pct": MIN_MOMENTUM_PCT,
+        "max_position_usd": MAX_POSITION_USD,
+        "lookback_minutes": LOOKBACK_MINUTES,
+        "min_time_remaining": MIN_TIME_REMAINING,
+        "volume_confidence": VOLUME_CONFIDENCE,
+        "daily_budget": DAILY_BUDGET,
+    }
+    base.update(record)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(base, ensure_ascii=False) + "\n")
 
 
 _client = None
@@ -411,7 +443,6 @@ def _focus_markets_near_now(markets, window):
     clean = [m for m in markets if m.get("end_time") is not None]
     clean.sort(key=lambda m: m["end_time"])
 
-    # Very broad near-now band: 1 full window in the past to 24 windows ahead
     near_now = []
     for m in clean:
         remaining = (m["end_time"] - now).total_seconds()
@@ -477,7 +508,6 @@ def find_best_fast_market(markets):
     for m in markets:
         inferred_live, remaining = _infer_market_live(m, now)
         simmer_live = m.get("is_live_now")
-
         live_now = simmer_live is True or inferred_live
 
         if remaining is None:
@@ -687,6 +717,11 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         if not quiet or force:
             print(msg)
 
+    def log_skip(reason, **extra):
+        record = {"status": "skip", "reason": reason}
+        record.update(extra)
+        _write_run_log(__file__, record)
+
     log("⚡ Simmer FastLoop Trading Skill")
     log("=" * 50)
 
@@ -750,6 +785,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
                 log(f"  Skipped: {m['question'][:50]}... ({remaining:.0f}s remaining)")
         log(f"  No live tradeable markets among {len(markets)} found — waiting for next window")
         print(f"📊 Summary: No tradeable markets (0/{len(markets)} live with enough time)")
+        log_skip("no tradeable markets", markets_found=len(markets))
         return
 
     end_time = best.get("end_time")
@@ -761,6 +797,11 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     live_price = fetch_live_prices(clob_tokens) if clob_tokens else None
     if live_price is None:
         print("📊 Summary: No trade (CLOB price unavailable)")
+        log_skip(
+            "CLOB price unavailable",
+            market=best.get("question"),
+            seconds_to_expiry=remaining,
+        )
         return
 
     market_yes_price = live_price
@@ -776,6 +817,12 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     momentum = get_momentum(ASSET, SIGNAL_SOURCE, LOOKBACK_MINUTES)
     if not momentum:
         log("  ❌ Failed to fetch price data", force=True)
+        log_skip(
+            "failed to fetch price data",
+            market=best.get("question"),
+            seconds_to_expiry=remaining,
+            yes_price=market_yes_price,
+        )
         return
 
     log(f"  Source used: {momentum.get('source_used', SIGNAL_SOURCE)}")
@@ -792,6 +839,14 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
 
     if momentum_pct < MIN_MOMENTUM_PCT:
         print(f"📊 Summary: No trade (momentum too weak: {momentum_pct:.3f}%)")
+        log_skip(
+            "momentum too weak",
+            market=best.get("question"),
+            seconds_to_expiry=remaining,
+            yes_price=market_yes_price,
+            momentum_pct=momentum["momentum_pct"],
+            source_used=momentum.get("source_used"),
+        )
         return
 
     if direction == "up":
@@ -805,10 +860,31 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
 
     if VOLUME_CONFIDENCE and momentum["volume_ratio"] < 0.5:
         print("📊 Summary: No trade (low volume)")
+        log_skip(
+            "low volume",
+            market=best.get("question"),
+            side=side.upper(),
+            seconds_to_expiry=remaining,
+            yes_price=market_yes_price,
+            momentum_pct=momentum["momentum_pct"],
+            divergence=divergence,
+            volume_ratio=momentum["volume_ratio"],
+            source_used=momentum.get("source_used"),
+        )
         return
 
     if divergence <= 0:
         print("📊 Summary: No trade (market already priced in)")
+        log_skip(
+            "market already priced in",
+            market=best.get("question"),
+            side=side.upper(),
+            seconds_to_expiry=remaining,
+            yes_price=market_yes_price,
+            momentum_pct=momentum["momentum_pct"],
+            divergence=divergence,
+            source_used=momentum.get("source_used"),
+        )
         return
 
     position_size = calculate_position_size(MAX_POSITION_USD, smart_sizing)
@@ -817,17 +893,48 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     remaining_budget = DAILY_BUDGET - daily_spend["spent"]
     if remaining_budget <= 0:
         print("📊 Summary: No trade (daily budget exhausted)")
+        log_skip(
+            "daily budget exhausted",
+            market=best.get("question"),
+            side=side.upper(),
+            seconds_to_expiry=remaining,
+            yes_price=market_yes_price,
+            momentum_pct=momentum["momentum_pct"],
+            divergence=divergence,
+            source_used=momentum.get("source_used"),
+        )
         return
     if position_size > remaining_budget:
         position_size = remaining_budget
     if position_size < 0.50:
         print("📊 Summary: No trade (remaining budget too small)")
+        log_skip(
+            "remaining budget too small",
+            market=best.get("question"),
+            side=side.upper(),
+            seconds_to_expiry=remaining,
+            yes_price=market_yes_price,
+            momentum_pct=momentum["momentum_pct"],
+            divergence=divergence,
+            source_used=momentum.get("source_used"),
+        )
         return
 
     if price > 0:
         min_cost = MIN_SHARES_PER_ORDER * price
         if min_cost > position_size:
             print("📊 Summary: No trade (position too small)")
+            log_skip(
+                "position too small",
+                market=best.get("question"),
+                side=side.upper(),
+                seconds_to_expiry=remaining,
+                yes_price=market_yes_price,
+                momentum_pct=momentum["momentum_pct"],
+                divergence=divergence,
+                size_usd=position_size,
+                source_used=momentum.get("source_used"),
+            )
             return
 
     log(f"  ✅ Signal: {side.upper()} — {trade_rationale}", force=True)
@@ -839,6 +946,16 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         market_id, import_error = import_fast_market_market(best["slug"])
         if not market_id:
             print(f"📊 Summary: No trade (import failed: {import_error})")
+            log_skip(
+                f"import failed: {import_error}",
+                market=best.get("question"),
+                side=side.upper(),
+                seconds_to_expiry=remaining,
+                yes_price=market_yes_price,
+                momentum_pct=momentum["momentum_pct"],
+                divergence=divergence,
+                source_used=momentum.get("source_used"),
+            )
             return
 
     tag = "SIMULATED" if dry_run else "LIVE"
@@ -848,6 +965,40 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     if result and result.get("success"):
         shares = result.get("shares_bought") or result.get("shares") or 0
         log(f"  ✅ {'[PAPER] ' if result.get('simulated') else ''}Bought {shares:.1f} {side.upper()} shares @ ${price:.3f}", force=True)
+
+        _write_run_log(__file__, {
+            "status": "paper" if result.get("simulated") else "live",
+            "market": best.get("question"),
+            "side": side.upper(),
+            "yes_price": market_yes_price,
+            "momentum_pct": momentum["momentum_pct"],
+            "divergence": divergence,
+            "size_usd": position_size,
+            "shares": shares,
+            "reason": "paper trade" if result.get("simulated") else "live trade",
+            "source_used": momentum.get("source_used"),
+            "seconds_to_expiry": remaining,
+        })
+
+        if not result.get("simulated"):
+            daily_spend["spent"] += position_size
+            daily_spend["trades"] += 1
+            _save_daily_spend(__file__, daily_spend)
+
+        if result.get("trade_id") and JOURNAL_AVAILABLE and not result.get("simulated"):
+            confidence = min(0.9, 0.5 + divergence + (momentum_pct / 100))
+            log_trade(
+                trade_id=result["trade_id"],
+                source=TRADE_SOURCE,
+                skill_slug=SKILL_SLUG,
+                thesis=trade_rationale,
+                confidence=round(confidence, 2),
+                asset=ASSET,
+                momentum_pct=round(momentum["momentum_pct"], 3),
+                volume_ratio=round(momentum["volume_ratio"], 2),
+                signal_source=SIGNAL_SOURCE,
+            )
+
         print("\n📊 Summary:")
         print(f"  Sprint: {best['question'][:50]}")
         print(f"  Signal: {direction} {momentum_pct:.3f}% | YES ${market_yes_price:.3f}")
@@ -855,6 +1006,17 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     else:
         error = result.get("error", "Unknown error") if result else "No response"
         log(f"  ❌ Trade failed: {error}", force=True)
+        log_skip(
+            f"trade failed: {error}",
+            market=best.get("question"),
+            side=side.upper(),
+            yes_price=market_yes_price,
+            momentum_pct=momentum["momentum_pct"],
+            divergence=divergence,
+            size_usd=position_size,
+            source_used=momentum.get("source_used"),
+            seconds_to_expiry=remaining,
+        )
 
 
 if __name__ == "__main__":
