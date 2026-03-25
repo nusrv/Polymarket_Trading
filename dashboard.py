@@ -175,7 +175,11 @@ MAIN_TEMPLATE = """
       <div class="value blue">{{ pf.open_count }}</div>
     </div>
     <div class="card">
-      <div class="label">Total Invested</div>
+      <div class="label">Open Exposure</div>
+      <div class="value blue">${{ "%.2f"|format(pf.open_cost) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Traded All-Time</div>
       <div class="value grey">${{ "%.2f"|format(pf.total_invested) }}</div>
     </div>
   </div>
@@ -191,8 +195,8 @@ MAIN_TEMPLATE = """
         <th>Entry Price</th>
         <th>Shares</th>
         <th>Cost</th>
-        <th>Entered</th>
-        <th>Expires</th>
+        <th>Entered ({{ tz_offset }})</th>
+        <th>Expires ({{ tz_offset }})</th>
       </tr>
     </thead>
     <tbody>
@@ -203,42 +207,8 @@ MAIN_TEMPLATE = """
         <td>${{ "%.3f"|format(p.entry_price) }}</td>
         <td>{{ "%.1f"|format(p.shares) }}</td>
         <td class="blue">${{ "%.2f"|format(p.cost_usd) }}</td>
-        <td class="grey">{{ p.entered_at[:16].replace("T"," ") }}</td>
-        <td class="grey">{{ p.end_time[:16].replace("T"," ") if p.end_time else "—" }}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table>
-  {% endif %}
-
-  <!-- ── RECENT RESOLVED ───────────────────── -->
-  {% if resolved_positions %}
-  <h2>Recent Resolved Positions</h2>
-  <table>
-    <thead>
-      <tr>
-        <th>Market</th>
-        <th>Side</th>
-        <th>Entry</th>
-        <th>Shares</th>
-        <th>Cost</th>
-        <th>P&L</th>
-        <th>Result</th>
-        <th>Resolved</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for p in resolved_positions %}
-      {% set pnl = p.pnl_usd or 0 %}
-      <tr>
-        <td class="ellipsis" title="{{ p.market }}">{{ p.market[:55] }}{% if p.market|length > 55 %}…{% endif %}</td>
-        <td><span class="badge badge-{{ p.side.lower() }}">{{ p.side }}</span></td>
-        <td>${{ "%.3f"|format(p.entry_price) }}</td>
-        <td>{{ "%.1f"|format(p.shares) }}</td>
-        <td>${{ "%.2f"|format(p.cost_usd) }}</td>
-        <td class="{{ 'pnl-pos' if pnl >= 0 else 'pnl-neg' }}">${{ "%+.2f"|format(pnl) }}</td>
-        <td><span class="badge badge-{{ p.status }}">{{ p.status.upper() }}</span></td>
-        <td class="grey">{{ (p.resolved_at or "")[:16].replace("T"," ") }}</td>
+        <td class="grey">{{ p.entered_at | fmt_ts }}</td>
+        <td class="grey">{{ p.end_time | fmt_ts if p.end_time else "—" }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -251,7 +221,7 @@ MAIN_TEMPLATE = """
   <table>
     <thead>
       <tr>
-        <th>Time (local)</th>
+        <th>Time ({{ tz_offset }})</th>
         <th>Asset</th>
         <th>Status</th>
         <th>Side</th>
@@ -366,7 +336,7 @@ PORTFOLIO_TEMPLATE = """
       <div class="value grey">{{ pf.expired_count }}</div>
     </div>
     <div class="card">
-      <div class="label">Total Invested</div>
+      <div class="label">Traded All-Time</div>
       <div class="value grey">${{ "%.2f"|format(pf.total_invested) }}</div>
     </div>
   </div>
@@ -382,8 +352,8 @@ PORTFOLIO_TEMPLATE = """
         <th>Cost</th>
         <th>P&L</th>
         <th>Status</th>
-        <th>Entered</th>
-        <th>Resolved</th>
+        <th>Entered ({{ tz_offset }})</th>
+        <th>Resolved ({{ tz_offset }})</th>
       </tr>
     </thead>
     <tbody>
@@ -486,6 +456,12 @@ SETTINGS_TEMPLATE = """
               <option value="{{ opt }}" {{ 'selected' if s.current == opt }}>{{ opt }}</option>
               {% endfor %}
             </select>
+          {% elif s.type == 'tz_select' %}
+            <select name="{{ s.key }}" style="width:300px">
+              {% for val, lbl in s.options %}
+              <option value="{{ val }}" {{ 'selected' if s.current == val }}>{{ lbl }}</option>
+              {% endfor %}
+            </select>
           {% else %}
             <input type="{{ 'number' if s.type == 'number' else 'text' }}"
                    name="{{ s.key }}" value="{{ s.current }}"
@@ -584,8 +560,60 @@ def fmt_ts_filter(ts_str):
 
 
 def _tz_label():
-    """Short label for the display timezone, e.g. 'AST+3'."""
+    """Short label for the display timezone, e.g. 'Asia/Amman'."""
     return _load_config().get("display_tz", "Asia/Amman")
+
+
+def _tz_offset_label():
+    """UTC offset string for the display timezone, e.g. 'UTC+3'."""
+    try:
+        tz = _get_tz()
+        total_mins = int(datetime.now(tz).utcoffset().total_seconds() / 60)
+        sign = "+" if total_mins >= 0 else "-"
+        h, m = divmod(abs(total_mins), 60)
+        return f"UTC{sign}{h}:{m:02d}" if m else f"UTC{sign}{h}"
+    except Exception:
+        return "UTC"
+
+
+# Major IANA timezones for the settings dropdown (value, display label)
+TZ_OPTIONS = [
+    ("Pacific/Midway",       "UTC-11 — Midway Island"),
+    ("Pacific/Honolulu",     "UTC-10 — Honolulu (Hawaii)"),
+    ("America/Anchorage",    "UTC-9  — Anchorage (Alaska)"),
+    ("America/Los_Angeles",  "UTC-8  — Los Angeles / Vancouver"),
+    ("America/Denver",       "UTC-7  — Denver / Phoenix"),
+    ("America/Chicago",      "UTC-6  — Chicago / Mexico City"),
+    ("America/New_York",     "UTC-5  — New York / Toronto"),
+    ("America/Halifax",      "UTC-4  — Halifax (Canada)"),
+    ("America/Sao_Paulo",    "UTC-3  — São Paulo (Brazil)"),
+    ("Atlantic/South_Georgia","UTC-2 — South Georgia"),
+    ("Atlantic/Azores",      "UTC-1  — Azores"),
+    ("UTC",                  "UTC+0  — UTC / Reykjavik"),
+    ("Europe/London",        "UTC+0  — London (UK)"),
+    ("Europe/Paris",         "UTC+1  — Paris / Berlin / Rome"),
+    ("Europe/Athens",        "UTC+2  — Athens / Cairo / Kyiv"),
+    ("Europe/Istanbul",      "UTC+3  — Istanbul (Turkey)"),
+    ("Asia/Riyadh",          "UTC+3  — Riyadh (Saudi Arabia)"),
+    ("Asia/Amman",           "UTC+3  — Amman (Jordan)"),
+    ("Asia/Baghdad",         "UTC+3  — Baghdad (Iraq)"),
+    ("Asia/Tehran",          "UTC+3:30 — Tehran (Iran)"),
+    ("Asia/Dubai",           "UTC+4  — Dubai (UAE)"),
+    ("Asia/Kabul",           "UTC+4:30 — Kabul (Afghanistan)"),
+    ("Asia/Karachi",         "UTC+5  — Karachi (Pakistan)"),
+    ("Asia/Kolkata",         "UTC+5:30 — Mumbai / New Delhi (India)"),
+    ("Asia/Kathmandu",       "UTC+5:45 — Kathmandu (Nepal)"),
+    ("Asia/Dhaka",           "UTC+6  — Dhaka (Bangladesh)"),
+    ("Asia/Yangon",          "UTC+6:30 — Yangon (Myanmar)"),
+    ("Asia/Bangkok",         "UTC+7  — Bangkok / Jakarta"),
+    ("Asia/Singapore",       "UTC+8  — Singapore / Kuala Lumpur"),
+    ("Asia/Shanghai",        "UTC+8  — Beijing / Shanghai (China)"),
+    ("Asia/Tokyo",           "UTC+9  — Tokyo (Japan)"),
+    ("Australia/Adelaide",   "UTC+9:30 — Adelaide (Australia)"),
+    ("Australia/Sydney",     "UTC+10 — Sydney / Melbourne"),
+    ("Pacific/Guadalcanal",  "UTC+11 — Solomon Islands"),
+    ("Pacific/Auckland",     "UTC+12 — Auckland (New Zealand)"),
+]
 
 
 def _normalize_records(raw_records):
@@ -613,9 +641,8 @@ def index():
     mode    = os.environ.get("TRADING_MODE", "paper")
     records = _normalize_records(stats.get("records", []))
 
-    positions    = pf.get("positions", [])
-    open_pos     = [p for p in positions if p.get("status") == "open"]
-    resolved_pos = [p for p in positions if p.get("status") in ("won", "lost")][:20]
+    positions = pf.get("positions", [])
+    open_pos  = [p for p in positions if p.get("status") == "open"]
 
     # Bot staleness check — warn if no run in > 10 minutes
     bot_stale      = False
@@ -639,17 +666,17 @@ def index():
 
     return render_template_string(
         MAIN_TEMPLATE,
-        css              = CSS,
-        nav              = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
-        stats            = _Obj(stats),
-        pf               = _Obj(pf),
-        mode             = mode,
-        records          = records,
-        open_positions   = open_pos,
-        resolved_positions = list(reversed(resolved_pos)),
-        bot_stale        = bot_stale,
-        bot_stale_mins   = bot_stale_mins,
-        last_run_ts      = last_run_ts,
+        css            = CSS,
+        nav            = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
+        stats          = _Obj(stats),
+        pf             = _Obj(pf),
+        mode           = mode,
+        records        = records,
+        open_positions = open_pos,
+        tz_offset      = _tz_offset_label(),
+        bot_stale      = bot_stale,
+        bot_stale_mins = bot_stale_mins,
+        last_run_ts    = last_run_ts,
     )
 
 
@@ -664,6 +691,7 @@ def portfolio():
         nav       = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
         pf        = _Obj(pf),
         positions = positions,
+        tz_offset = _tz_offset_label(),
     )
 
 
@@ -717,8 +745,9 @@ def settings_page():
              env_var="SIMMER_SPRINT_SIGNAL",       hint="CEX price feed for momentum"),
         dict(key="volume_confidence",  label="Volume Confidence",   type="bool",
              env_var="SIMMER_SPRINT_VOL_CONF",     hint="Weight signal by Binance volume ratio"),
-        dict(key="display_tz",         label="Display Timezone",    type="text",
-             env_var="DISPLAY_TZ",                 hint="IANA timezone name for timestamps (e.g. Asia/Amman, UTC, Europe/London)"),
+        dict(key="display_tz",         label="Display Timezone",    type="tz_select",
+             options=TZ_OPTIONS,
+             env_var="DISPLAY_TZ",                 hint="Timezone used for all timestamps in the dashboard"),
     ]
 
     for s in SETTINGS_DEF:
