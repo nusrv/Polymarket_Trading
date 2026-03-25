@@ -6,6 +6,7 @@ Reads from PostgreSQL via database.py and paper_portfolio.py.
 
 import json
 import os
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, jsonify, render_template_string, request, redirect, url_for
@@ -857,7 +858,8 @@ def analyze_page():
         from analytics import get_full_analysis
         data = get_full_analysis()
     except Exception as e:
-        return f"<pre style='background:#0d1117;color:#f85149;padding:20px'>Analytics error: {e}</pre>", 500
+        tb = traceback.format_exc()
+        return f"<pre style='background:#0d1117;color:#f85149;padding:20px;font-family:monospace'>Analytics load error:\n{tb}</pre>", 500
 
     ANALYZE_EXTRA_CSS = """
     .rec-card { background:#161b22; border:1px solid #30363d; border-radius:8px;
@@ -921,7 +923,7 @@ def analyze_page():
                     r_wr        = r["win_rate"]
                     r_threshold = r["threshold"]
                     r_reason    = f"What-if analysis: win rate {r_wr}% at threshold {r_threshold}"
-                    param_key   = param_label.lower().replace(" ", "_").replace("min_", "").replace("threshold", "")
+                    param_key   = "min_momentum_pct" if "momentum" in param_label.lower() else "entry_threshold"
                     h += "<td><form method='POST' action='/apply-setting' style='display:inline'>"
                     h += f"<input type='hidden' name='param' value='{param_key}'>"
                     h += f"<input type='hidden' name='value' value='{r_threshold}'>"
@@ -1031,12 +1033,16 @@ def analyze_page():
 </body>
 </html>"""
 
-    return render_template_string(
-        tmpl,
-        css       = CSS,
-        extra_css = ANALYZE_EXTRA_CSS,
-        nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
-    )
+    try:
+        return render_template_string(
+            tmpl,
+            css       = CSS,
+            extra_css = ANALYZE_EXTRA_CSS,
+            nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        )
+    except Exception as e:
+        tb = traceback.format_exc()
+        return f"<pre style='background:#0d1117;color:#f85149;padding:20px;font-family:monospace'>Analyze render error:\n{tb}</pre>", 500
 
 
 @app.route("/apply-setting", methods=["POST"])
