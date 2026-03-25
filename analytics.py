@@ -155,7 +155,7 @@ def get_enriched_trades():
             "timestamp":    r.get("timestamp", ""),
             "status":       status,
             "pnl_usd":      pos.get("pnl_usd") or 0 if pos else 0,
-            "cost_usd":     pos.get("cost_usd") or r.get("size_usd") or 0,
+            "cost_usd":     pos.get("cost_usd") or r.get("size_usd") or 0 if pos else r.get("size_usd") or 0,
         })
 
     return enriched
