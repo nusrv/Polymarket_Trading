@@ -859,7 +859,7 @@ def analyze_page():
         data = get_full_analysis()
     except Exception as e:
         tb = traceback.format_exc()
-        return f"<pre style='background:#0d1117;color:#f85149;padding:20px;font-family:monospace'>Analytics load error:\n{tb}</pre>", 500
+        return f"<pre style='background:#0d1117;color:#f85149;padding:20px;font-family:monospace'>Analytics load error:\n{tb}</pre>", 200
 
     ANALYZE_EXTRA_CSS = """
     .rec-card { background:#161b22; border:1px solid #30363d; border-radius:8px;
@@ -1042,7 +1042,7 @@ def analyze_page():
         )
     except Exception as e:
         tb = traceback.format_exc()
-        return f"<pre style='background:#0d1117;color:#f85149;padding:20px;font-family:monospace'>Analyze render error:\n{tb}</pre>", 500
+        return f"<pre style='background:#0d1117;color:#f85149;padding:20px;font-family:monospace'>Analyze render error:\n{tb}</pre>", 200
 
 
 @app.route("/apply-setting", methods=["POST"])
