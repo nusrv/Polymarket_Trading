@@ -66,6 +66,7 @@ NAV = """
   <a href="/">Dashboard</a> &nbsp;|&nbsp;
   <a href="/portfolio">Portfolio</a> &nbsp;|&nbsp;
   <a href="/results">Results Log</a> &nbsp;|&nbsp;
+  <a href="/analyze">&#128200; Analyze</a> &nbsp;|&nbsp;
   <a href="/settings">Settings</a> &nbsp;|&nbsp;
   <a href="/api/trades" target="_blank">API</a>
 </div>
@@ -848,6 +849,233 @@ def api_portfolio():
         return jsonify(get_summary())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/analyze")
+def analyze_page():
+    try:
+        from analytics import get_full_analysis
+        data = get_full_analysis()
+    except Exception as e:
+        return f"<pre style='background:#0d1117;color:#f85149;padding:20px'>Analytics error: {e}</pre>", 500
+
+    ANALYZE_EXTRA_CSS = """
+    .rec-card { background:#161b22; border:1px solid #30363d; border-radius:8px;
+                padding:16px 20px; margin-bottom:12px; }
+    .rec-card.high   { border-left:3px solid #3fb950; }
+    .rec-card.medium { border-left:3px solid #d29922; }
+    .rec-card.low    { border-left:3px solid #8b949e; }
+    .rec-title { font-weight:bold; color:#e6edf3; margin-bottom:6px; font-size:1em; }
+    .rec-reason { color:#8b949e; font-size:0.85em; margin-bottom:8px; }
+    .rec-impact { color:#58a6ff; font-size:0.82em; margin-bottom:10px; }
+    .apply-btn { background:#238636; color:#fff; border:none; padding:5px 14px;
+                 border-radius:5px; cursor:pointer; font-family:monospace; font-size:0.82em; }
+    .apply-btn:hover { background:#2ea043; }
+    .change-old { color:#f85149; text-decoration:line-through; }
+    .change-new { color:#3fb950; font-weight:bold; }
+    .best { background:#1a3d1a !important; }
+    """
+
+    def _tbl(rows, col_label="Range"):
+        if not rows:
+            return "<p class='grey' style='padding:10px 0'>Not enough data yet.</p>"
+        max_wr = max((r["win_rate"] for r in rows), default=0)
+        h = f"<table><thead><tr><th>{col_label}</th><th>Trades</th><th>Won</th><th>Lost</th>"
+        h += "<th>Win Rate</th><th>Total P&L</th><th>Avg P&L</th></tr></thead><tbody>"
+        for r in rows:
+            best = ' class="best"' if r["win_rate"] == max_wr and max_wr > 0 else ""
+            wr_cls = "green" if r["win_rate"] >= 55 else ("yellow" if r["win_rate"] >= 45 else "red")
+            pnl_cls = "pnl-pos" if r["total_pnl"] >= 0 else "pnl-neg"
+            apnl_cls = "pnl-pos" if r["avg_pnl"] >= 0 else "pnl-neg"
+            h += f"<tr{best}><td>{r['range']}</td><td class='blue'>{r['trades']}</td>"
+            h += f"<td class='green'>{r['won']}</td><td class='red'>{r['lost']}</td>"
+            h += f"<td class='{wr_cls}'>{r['win_rate']}%</td>"
+            h += f"<td class='{pnl_cls}'>${r['total_pnl']:+.2f}</td>"
+            h += f"<td class='{apnl_cls}'>${r['avg_pnl']:+.2f}</td></tr>"
+        h += "</tbody></table>"
+        return h
+
+    def _whatif_tbl(rows, param_label, current_val):
+        if not rows:
+            return "<p class='grey' style='padding:10px 0'>Not enough data yet.</p>"
+        max_wr = max((r["win_rate"] for r in rows if r["trades"] >= 3), default=0)
+        h = f"<table><thead><tr><th>{param_label}</th><th>Qualifying Trades</th>"
+        h += "<th>Filtered Out</th><th>Win Rate</th><th>Total P&L</th>"
+        h += "<th>vs Current</th></tr></thead><tbody>"
+        for r in rows:
+            is_current = abs(r["threshold"] - current_val) < 0.001
+            best = ' class="best"' if r["win_rate"] == max_wr and r["trades"] >= 3 and max_wr > 0 else ""
+            cur_label = " ← current" if is_current else ""
+            wr_cls = "green" if r["win_rate"] >= 55 else ("yellow" if r["win_rate"] >= 45 else ("red" if r["win_rate"] > 0 else "grey"))
+            pnl_cls = "pnl-pos" if r["total_pnl"] >= 0 else "pnl-neg"
+            h += f"<tr{best}><td><b>≥ {r['threshold']}</b>{cur_label}</td>"
+            h += f"<td class='blue'>{r['trades']}</td>"
+            h += f"<td class='grey'>{r['filtered_out']}</td>"
+            h += f"<td class='{wr_cls}'>{r['win_rate']}%</td>"
+            h += f"<td class='{pnl_cls}'>${r['total_pnl']:+.2f}</td>"
+            if is_current:
+                h += "<td class='grey'>—</td>"
+            else:
+                best_in_whatif = next((x for x in rows if x["win_rate"] == max_wr and x["trades"] >= 3), None)
+                if best_in_whatif and not is_current:
+                    diff = r["win_rate"] - current_val
+                    h += f"<td><form method='POST' action='/apply-setting' style='display:inline'>"
+                    h += f"<input type='hidden' name='param' value='{param_label.lower().replace(' ','_').replace('min_','').replace('threshold','')}'>"
+                    h += f"<input type='hidden' name='value' value='{r['threshold']}'>"
+                    h += f"<input type='hidden' name='reason' value='What-if analysis: win rate {r[\"win_rate\"]}% at threshold {r[\"threshold\"]}'>"
+                    h += f"<button type='submit' class='apply-btn'>Apply</button></form></td>"
+                else:
+                    h += "<td>—</td>"
+            h += "</tr>"
+        h += "</tbody></table>"
+        return h
+
+    recs_html = ""
+    for rec in data["recommendations"]:
+        conf  = rec.get("confidence", "low")
+        title = f"{rec['parameter']}: {rec['current']} → {rec['suggested']}" if rec["parameter"] and rec["suggested"] else "Observation"
+        recs_html += f"<div class='rec-card {conf}'>"
+        recs_html += f"<div class='rec-title'>{title}</div>"
+        recs_html += f"<div class='rec-reason'>{rec['reason']}</div>"
+        if rec.get("impact"):
+            recs_html += f"<div class='rec-impact'>{rec['impact']}</div>"
+        if rec["parameter"] and rec["suggested"] and rec["parameter"] not in ("side_filter",):
+            recs_html += f"""<form method='POST' action='/apply-setting' style='display:inline'>
+              <input type='hidden' name='param' value='{rec["parameter"]}'>
+              <input type='hidden' name='value' value='{rec["suggested"]}'>
+              <input type='hidden' name='reason' value='{rec["reason"][:120]}'>
+              <button type='submit' class='apply-btn'>&#10003; Apply This Change</button>
+            </form>"""
+        recs_html += "</div>"
+
+    changelog_html = ""
+    for c in data["change_log"]:
+        ts = c.get("timestamp", "")[:16].replace("T", " ")
+        src_cls = "green" if c.get("source") == "recommended" else "blue"
+        changelog_html += f"""<tr>
+          <td class='grey'>{ts}</td>
+          <td class='yellow'>{c.get('parameter','?')}</td>
+          <td><span class='change-old'>{c.get('old_value','?')}</span></td>
+          <td><span class='change-new'>{c.get('new_value','?')}</span></td>
+          <td class='{src_cls}'>{c.get('source','manual')}</td>
+          <td class='grey'>{c.get('reason','')[:80]}</td>
+        </tr>"""
+
+    cfg = data["current_config"]
+
+    tmpl = f"""<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>FastLoop Analysis</title>
+  <meta http-equiv="refresh" content="120">
+  <style>{{{{ css | safe }}}}{{{{ extra_css | safe }}}}</style>
+</head>
+<body>
+  {{{{ nav | safe }}}}
+
+  <h2>Overall Performance</h2>
+  <div class="cards">
+    <div class="card">
+      <div class="label">Resolved Trades</div>
+      <div class="value blue">{data['total_resolved']}</div>
+    </div>
+    <div class="card">
+      <div class="label">Overall Win Rate</div>
+      <div class="value {'green' if data['overall_win_rate'] >= 50 else 'red'}">{data['overall_win_rate']}%</div>
+    </div>
+    <div class="card">
+      <div class="label">Enriched Records</div>
+      <div class="value grey">{data['total_enriched']}</div>
+    </div>
+    <div class="card">
+      <div class="label">Min Momentum</div>
+      <div class="value yellow">{cfg.get('min_momentum_pct', '?')}%</div>
+    </div>
+    <div class="card">
+      <div class="label">Entry Threshold</div>
+      <div class="value yellow">{cfg.get('entry_threshold', '?')}</div>
+    </div>
+  </div>
+
+  <h2>Recommendations</h2>
+  {recs_html if recs_html else "<p class='grey'>No recommendations yet.</p>"}
+
+  <h2>Performance by Momentum Strength</h2>
+  <p class="grey" style="font-size:0.82em;margin-bottom:10px">Highlighted row = best win rate. Use what-if table below to find optimal threshold.</p>
+  {_tbl(data['by_momentum'], 'Momentum Range')}
+
+  <h2>Performance by Divergence</h2>
+  {_tbl(data['by_divergence'], 'Divergence Range')}
+
+  <h2>Performance by Side (YES vs NO)</h2>
+  {_tbl(data['by_side'], 'Trade Side')}
+
+  <h2>Performance by YES Price at Entry</h2>
+  {_tbl(data['by_yes_price'], 'YES Price Range')}
+
+  <h2>What-If: Min Momentum Threshold</h2>
+  <p class="grey" style="font-size:0.82em;margin-bottom:10px">Shows how win rate changes if you only trade when momentum exceeds each threshold. Current: <b>{cfg.get('min_momentum_pct', 0.03)}%</b></p>
+  {_whatif_tbl(data['whatif_momentum'], 'Min Momentum %', float(cfg.get('min_momentum_pct', 0.03)))}
+
+  <h2>What-If: Entry Threshold (Divergence)</h2>
+  <p class="grey" style="font-size:0.82em;margin-bottom:10px">Shows how win rate changes if you only trade when price divergence exceeds each value. Current: <b>{cfg.get('entry_threshold', 0.05)}</b></p>
+  {_whatif_tbl(data['whatif_divergence'], 'Entry Threshold', float(cfg.get('entry_threshold', 0.05)))}
+
+  <h2>Settings Change Log</h2>
+  {'<table><thead><tr><th>Time (UTC)</th><th>Parameter</th><th>Old Value</th><th>New Value</th><th>Source</th><th>Reason</th></tr></thead><tbody>' + changelog_html + '</tbody></table>' if changelog_html else "<p class='grey' style='padding:10px 0'>No changes recorded yet.</p>"}
+
+</body>
+</html>"""
+
+    return render_template_string(
+        tmpl,
+        css       = CSS,
+        extra_css = ANALYZE_EXTRA_CSS,
+        nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+    )
+
+
+@app.route("/apply-setting", methods=["POST"])
+def apply_setting():
+    param  = request.form.get("param", "").strip()
+    value  = request.form.get("value", "").strip()
+    reason = request.form.get("reason", "Applied from analysis page").strip()
+
+    ALLOWED = {
+        "min_momentum_pct":  float,
+        "entry_threshold":   float,
+        "max_position":      float,
+        "daily_budget":      float,
+        "lookback_minutes":  int,
+        "min_time_remaining":int,
+        "asset":             str,
+        "window":            str,
+        "signal_source":     str,
+        "volume_confidence": lambda v: v.lower() in ("true","1","yes"),
+    }
+
+    if param not in ALLOWED:
+        return f"<p style='color:#f85149;font-family:monospace;padding:20px'>Unknown parameter: {param}</p>", 400
+
+    try:
+        cast      = ALLOWED[param]
+        new_value = cast(value)
+    except Exception:
+        return f"<p style='color:#f85149;font-family:monospace;padding:20px'>Invalid value for {param}: {value}</p>", 400
+
+    cfg      = _load_config()
+    old_value = cfg.get(param, "not set")
+    cfg[param] = new_value
+    _save_config(cfg)
+
+    try:
+        from analytics import log_setting_change
+        log_setting_change(param, old_value, new_value, reason, source="recommended")
+    except Exception:
+        pass
+
+    return redirect("/analyze")
 
 
 @app.route("/health")
