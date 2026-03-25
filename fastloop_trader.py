@@ -957,6 +957,9 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
         shares = result.get("shares_bought") or result.get("shares") or 0
         log(f"  ✅ {'[PAPER] ' if result.get('simulated') else ''}Bought {shares:.1f} {side.upper()} shares @ ${price:.3f}", force=True)
 
+        yes_token_id = clob_tokens[0] if clob_tokens else None
+        end_time_iso = end_time.isoformat() if end_time else None
+
         emit_console_record({
             "status": "paper" if result.get("simulated") else "live",
             "market": best.get("question"),
@@ -969,7 +972,23 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
             "reason": "paper trade" if result.get("simulated") else "live trade",
             "source_used": momentum.get("source_used"),
             "seconds_to_expiry": remaining,
+            "yes_token_id": yes_token_id,
+            "end_time": end_time_iso,
         })
+
+        try:
+            from paper_portfolio import add_position
+            add_position(
+                market=best.get("question"),
+                side=side.upper(),
+                yes_token_id=yes_token_id,
+                entry_yes_price=market_yes_price,
+                shares=shares,
+                cost_usd=position_size,
+                end_time_iso=end_time_iso,
+            )
+        except Exception:
+            pass
 
         if not result.get("simulated"):
             daily_spend["spent"] += position_size
