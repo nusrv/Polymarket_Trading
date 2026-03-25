@@ -411,6 +411,19 @@ PORTFOLIO_TEMPLATE = """
 # Settings page template
 # ---------------------------------------------------------------------------
 
+SETTINGS_EXTRA_CSS = """
+input[type=text],input[type=number],select {
+  background:#161b22;border:1px solid #30363d;color:#e6edf3;
+  padding:5px 10px;border-radius:4px;font-family:monospace;font-size:0.9em;width:120px;
+}
+.btn { background:#238636;color:#fff;border:none;padding:7px 18px;
+       border-radius:6px;cursor:pointer;font-family:monospace;font-size:0.9em; }
+.btn:hover { background:#2ea043; }
+.saved { color:#3fb950;font-size:0.85em;margin-left:10px; }
+.hint  { color:#8b949e;font-size:0.80em; }
+.env-var { color:#d29922;font-size:0.78em; }
+"""
+
 SETTINGS_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -419,16 +432,7 @@ SETTINGS_TEMPLATE = """
   <title>FastLoop Settings</title>
   <style>
     {{ css | safe }}
-    input[type=text],input[type=number],select{{
-      background:#161b22;border:1px solid #30363d;color:#e6edf3;
-      padding:5px 10px;border-radius:4px;font-family:monospace;font-size:0.9em;width:120px;
-    }}
-    .btn{{background:#238636;color:#fff;border:none;padding:7px 18px;
-          border-radius:6px;cursor:pointer;font-family:monospace;font-size:0.9em;}}
-    .btn:hover{{background:#2ea043;}}
-    .saved{{color:#3fb950;font-size:0.85em;margin-left:10px;}}
-    .hint{{color:#8b949e;font-size:0.80em;}}
-    .env-var{{color:#d29922;font-size:0.78em;}}
+    {{ extra_css | safe }}
   </style>
 </head>
 <body>
@@ -650,10 +654,11 @@ def settings_page():
 
     return render_template_string(
         SETTINGS_TEMPLATE,
-        css      = CSS,
-        nav      = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
-        settings = SETTINGS_DEF,
-        saved    = saved,
+        css       = CSS,
+        extra_css = SETTINGS_EXTRA_CSS,
+        nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        settings  = SETTINGS_DEF,
+        saved     = saved,
     )
 
 
