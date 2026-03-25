@@ -100,6 +100,16 @@ openclaw cron add \
   --announce
 ```
 
+**Railway cron job** (recommended for cloud deployments):
+1. In your Railway project, go to **Settings → Cron Jobs**
+2. Add a new cron job:
+   - **Command:** `python fastloop_trader.py --live --quiet`
+   - **Schedule:** `*/5 * * * *` (every 5 minutes)
+3. Set environment variables in Railway's **Variables** tab:
+   - `SIMMER_API_KEY` — your Simmer API key
+   - `WALLET_PRIVATE_KEY` — your Polymarket wallet private key
+4. Do **not** use the `web:` Procfile entry for this — the script is single-cycle, not a persistent server. The `worker:` entry in `Procfile` is for manual one-off runs only.
+
 **Via OpenClaw heartbeat:** Add to your HEARTBEAT.md:
 ```
 Run: cd /path/to/fast market && python fastloop_trader.py --live --quiet

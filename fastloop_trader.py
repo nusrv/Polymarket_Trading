@@ -185,6 +185,11 @@ def emit_console_record(record):
         **record,
     }
     print("PAPER_TRADE_JSON::" + json.dumps(payload, ensure_ascii=False))
+    try:
+        from database import save_trade
+        save_trade(payload)
+    except Exception:
+        pass
 
 
 
