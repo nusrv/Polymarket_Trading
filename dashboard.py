@@ -9,6 +9,7 @@ import os
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from flask import Flask, jsonify, render_template_string, request, redirect, url_for
 
 app = Flask(__name__)
@@ -63,7 +64,7 @@ tr:hover td { background: #161b22; }
 NAV = """
 <h1>&#9889; FastLoop Trader</h1>
 <div class="sub">
-  Auto-refreshes every 60s &nbsp;|&nbsp; Last updated: {now} &nbsp;|&nbsp;
+  Auto-refreshes every 60s &nbsp;|&nbsp; {now} &nbsp;|&nbsp;
   <a href="/">Dashboard</a> &nbsp;|&nbsp;
   <a href="/portfolio">Portfolio</a> &nbsp;|&nbsp;
   <a href="/results">Results Log</a> &nbsp;|&nbsp;
@@ -88,6 +89,13 @@ MAIN_TEMPLATE = """
 </head>
 <body>
   {{ nav | safe }}
+
+  {% if bot_stale %}
+  <div style="background:#3d1a1a;border:1px solid #f85149;border-radius:6px;padding:10px 16px;margin-bottom:16px;color:#f85149;font-size:0.88em">
+    &#9888; Bot has not run in {{ bot_stale_mins }} minutes (last run: {{ last_run_ts }}).
+    Check the Railway cron job or scheduler.
+  </div>
+  {% endif %}
 
   <!-- ── BOT STATS ─────────────────────────── -->
   <h2>Bot Activity</h2>
@@ -243,7 +251,7 @@ MAIN_TEMPLATE = """
   <table>
     <thead>
       <tr>
-        <th>Time (UTC)</th>
+        <th>Time (local)</th>
         <th>Asset</th>
         <th>Status</th>
         <th>Side</th>
@@ -259,7 +267,7 @@ MAIN_TEMPLATE = """
     <tbody>
     {% for r in records %}
       <tr>
-        <td class="grey">{{ r.timestamp[:16].replace("T"," ") }}</td>
+        <td class="grey">{{ r.timestamp | fmt_ts }}</td>
         <td>{{ r.asset }}</td>
         <td><span class="badge badge-{{ r.status }}">{{ r.status.upper() }}</span></td>
         <td>
@@ -394,8 +402,8 @@ PORTFOLIO_TEMPLATE = """
           {% else %}${{ "%+.2f"|format(pnl) }}{% endif %}
         </td>
         <td><span class="badge badge-{{ p.status }}">{{ p.status.upper() }}</span></td>
-        <td class="grey">{{ p.entered_at[:16].replace("T"," ") }}</td>
-        <td class="grey">{{ (p.resolved_at or "—")[:16].replace("T"," ") }}</td>
+        <td class="grey">{{ p.entered_at | fmt_ts }}</td>
+        <td class="grey">{{ p.resolved_at | fmt_ts if p.resolved_at else "—" }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -543,6 +551,43 @@ def _save_config(updates):
     CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
 
 
+def _get_tz():
+    """Return configured display timezone (default: Asia/Amman = UTC+3)."""
+    tz_name = _load_config().get("display_tz", "Asia/Amman")
+    try:
+        return ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, Exception):
+        return timezone.utc
+
+
+def _now_local():
+    """Current datetime in the display timezone."""
+    return datetime.now(_get_tz())
+
+
+def _fmt_ts(ts_str, fmt="%Y-%m-%d %H:%M"):
+    """Convert a UTC ISO timestamp string to the display timezone."""
+    if not ts_str or ts_str == "—":
+        return "—"
+    try:
+        dt = datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(_get_tz()).strftime(fmt)
+    except Exception:
+        return str(ts_str)[:16].replace("T", " ")
+
+
+@app.template_filter("fmt_ts")
+def fmt_ts_filter(ts_str):
+    return _fmt_ts(ts_str)
+
+
+def _tz_label():
+    """Short label for the display timezone, e.g. 'AST+3'."""
+    return _load_config().get("display_tz", "Asia/Amman")
+
+
 def _normalize_records(raw_records):
     """Convert raw dicts to safe attribute-accessible Row objects for Jinja."""
     class Row(dict):
@@ -572,16 +617,39 @@ def index():
     open_pos     = [p for p in positions if p.get("status") == "open"]
     resolved_pos = [p for p in positions if p.get("status") in ("won", "lost")][:20]
 
+    # Bot staleness check — warn if no run in > 10 minutes
+    bot_stale      = False
+    bot_stale_mins = 0
+    last_run_ts    = "—"
+    all_records = stats.get("records", [])
+    if all_records:
+        last_ts_str = all_records[0].get("timestamp", "")
+        if last_ts_str:
+            try:
+                last_dt = datetime.fromisoformat(last_ts_str.replace("Z", "+00:00"))
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                age_mins = (datetime.now(timezone.utc) - last_dt).total_seconds() / 60
+                if age_mins > 10:
+                    bot_stale      = True
+                    bot_stale_mins = int(age_mins)
+                    last_run_ts    = _fmt_ts(last_ts_str)
+            except Exception:
+                pass
+
     return render_template_string(
         MAIN_TEMPLATE,
         css              = CSS,
-        nav              = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        nav              = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
         stats            = _Obj(stats),
         pf               = _Obj(pf),
         mode             = mode,
         records          = records,
         open_positions   = open_pos,
         resolved_positions = list(reversed(resolved_pos)),
+        bot_stale        = bot_stale,
+        bot_stale_mins   = bot_stale_mins,
+        last_run_ts      = last_run_ts,
     )
 
 
@@ -593,7 +661,7 @@ def portfolio():
     return render_template_string(
         PORTFOLIO_TEMPLATE,
         css       = CSS,
-        nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        nav       = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
         pf        = _Obj(pf),
         positions = positions,
     )
@@ -610,7 +678,7 @@ def settings_page():
             "max_position": float, "signal_source": str, "lookback_minutes": int,
             "min_time_remaining": int, "asset": str, "window": str,
             "volume_confidence": lambda v: v.lower() in ("true", "1", "yes"),
-            "daily_budget": float,
+            "daily_budget": float, "display_tz": str,
         }
         updates = {}
         for key, cast in types.items():
@@ -649,6 +717,8 @@ def settings_page():
              env_var="SIMMER_SPRINT_SIGNAL",       hint="CEX price feed for momentum"),
         dict(key="volume_confidence",  label="Volume Confidence",   type="bool",
              env_var="SIMMER_SPRINT_VOL_CONF",     hint="Weight signal by Binance volume ratio"),
+        dict(key="display_tz",         label="Display Timezone",    type="text",
+             env_var="DISPLAY_TZ",                 hint="IANA timezone name for timestamps (e.g. Asia/Amman, UTC, Europe/London)"),
     ]
 
     for s in SETTINGS_DEF:
@@ -658,7 +728,7 @@ def settings_page():
         SETTINGS_TEMPLATE,
         css       = CSS,
         extra_css = SETTINGS_EXTRA_CSS,
-        nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        nav       = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
         settings  = SETTINGS_DEF,
         saved     = saved,
     )
@@ -766,8 +836,8 @@ def results_page():
         </td>
         <td class="{{ 'pnl-pos' if pnl > 0 else 'pnl-neg' }}">${{ "%+.2f"|format(pnl) }}</td>
         <td><span class="badge badge-{{ p.status }}">{{ p.status.upper() }}</span></td>
-        <td class="grey">{{ p.entered_at[:16].replace("T"," ") }}</td>
-        <td class="grey">{{ (p.resolved_at or "—")[:16].replace("T"," ") }}</td>
+        <td class="grey">{{ p.entered_at | fmt_ts }}</td>
+        <td class="grey">{{ p.resolved_at | fmt_ts if p.resolved_at else "—" }}</td>
       </tr>
     {% endfor %}
     </tbody>
@@ -797,12 +867,12 @@ def results_page():
   {% if skips %}
   <table>
     <thead>
-      <tr><th>Time (UTC)</th><th>Asset</th><th>YES Price</th><th>Momentum%</th><th>Expires</th><th>Reason</th></tr>
+      <tr><th>Time (local)</th><th>Asset</th><th>YES Price</th><th>Momentum%</th><th>Expires</th><th>Reason</th></tr>
     </thead>
     <tbody>
     {% for r in skips %}
       <tr>
-        <td class="grey">{{ r.get('timestamp','')[:16].replace('T',' ') }}</td>
+        <td class="grey">{{ r.get('timestamp','') | fmt_ts }}</td>
         <td>{{ r.get('asset','—') }}</td>
         <td>{{ "$%.3f"|format(r.yes_price) if r.get('yes_price') is not none else "—" }}</td>
         <td class="{{ 'green' if (r.get('momentum_pct') or 0) >= 0 else 'red' }}">
@@ -821,7 +891,7 @@ def results_page():
     return render_template_string(
         tmpl,
         css            = CSS,
-        nav            = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        nav            = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
         resolved       = resolved,
         won_count      = len(won),
         lost_count     = len(lost),
@@ -955,7 +1025,7 @@ def analyze_page():
 
     changelog_html = ""
     for c in data["change_log"]:
-        ts = c.get("timestamp", "")[:16].replace("T", " ")
+        ts = _fmt_ts(c.get("timestamp", ""))
         src_cls = "green" if c.get("source") == "recommended" else "blue"
         changelog_html += f"""<tr>
           <td class='grey'>{ts}</td>
@@ -1028,7 +1098,7 @@ def analyze_page():
   {_whatif_tbl(data['whatif_divergence'], 'Entry Threshold', float(cfg.get('entry_threshold', 0.05)))}
 
   <h2>Settings Change Log</h2>
-  {'<table><thead><tr><th>Time (UTC)</th><th>Parameter</th><th>Old Value</th><th>New Value</th><th>Source</th><th>Reason</th></tr></thead><tbody>' + changelog_html + '</tbody></table>' if changelog_html else "<p class='grey' style='padding:10px 0'>No changes recorded yet.</p>"}
+  {'<table><thead><tr><th>Time (local)</th><th>Parameter</th><th>Old Value</th><th>New Value</th><th>Source</th><th>Reason</th></tr></thead><tbody>' + changelog_html + '</tbody></table>' if changelog_html else "<p class='grey' style='padding:10px 0'>No changes recorded yet.</p>"}
 
 </body>
 </html>"""
@@ -1038,7 +1108,7 @@ def analyze_page():
             tmpl,
             css       = CSS,
             extra_css = ANALYZE_EXTRA_CSS,
-            nav       = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+            nav       = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
         )
     except Exception as e:
         tb = traceback.format_exc()

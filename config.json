@@ -8,5 +8,6 @@
   "asset": "BTC",
   "window": "5m",
   "volume_confidence": false,
-  "daily_budget": 50.0
+  "daily_budget": 50.0,
+  "display_tz": "Asia/Amman"
 }
