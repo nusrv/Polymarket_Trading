@@ -60,11 +60,12 @@ tr:hover td { background: #161b22; }
 """
 
 NAV = """
-<h1>⚡ FastLoop Trader</h1>
+<h1>&#9889; FastLoop Trader</h1>
 <div class="sub">
   Auto-refreshes every 60s &nbsp;|&nbsp; Last updated: {now} &nbsp;|&nbsp;
   <a href="/">Dashboard</a> &nbsp;|&nbsp;
   <a href="/portfolio">Portfolio</a> &nbsp;|&nbsp;
+  <a href="/results">Results Log</a> &nbsp;|&nbsp;
   <a href="/settings">Settings</a> &nbsp;|&nbsp;
   <a href="/api/trades" target="_blank">API</a>
 </div>
@@ -81,10 +82,10 @@ MAIN_TEMPLATE = """
   <meta charset="utf-8">
   <title>FastLoop Trader</title>
   <meta http-equiv="refresh" content="60">
-  <style>{{ css }}</style>
+  <style>{{ css | safe }}</style>
 </head>
 <body>
-  {{ nav }}
+  {{ nav | safe }}
 
   <!-- ── BOT STATS ─────────────────────────── -->
   <h2>Bot Activity</h2>
@@ -303,10 +304,10 @@ PORTFOLIO_TEMPLATE = """
   <meta charset="utf-8">
   <title>FastLoop Portfolio</title>
   <meta http-equiv="refresh" content="60">
-  <style>{{ css }}</style>
+  <style>{{ css | safe }}</style>
 </head>
 <body>
-  {{ nav }}
+  {{ nav | safe }}
 
   <h2>Paper Portfolio — All Positions</h2>
   <div class="cards">
@@ -417,7 +418,7 @@ SETTINGS_TEMPLATE = """
   <meta charset="utf-8">
   <title>FastLoop Settings</title>
   <style>
-    {{ css }}
+    {{ css | safe }}
     input[type=text],input[type=number],select{{
       background:#161b22;border:1px solid #30363d;color:#e6edf3;
       padding:5px 10px;border-radius:4px;font-family:monospace;font-size:0.9em;width:120px;
@@ -431,7 +432,7 @@ SETTINGS_TEMPLATE = """
   </style>
 </head>
 <body>
-  {{ nav }}
+  {{ nav | safe }}
 
   <h2>Trading Parameters</h2>
   <p class="hint" style="margin-bottom:16px">
@@ -653,6 +654,176 @@ def settings_page():
         nav      = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
         settings = SETTINGS_DEF,
         saved    = saved,
+    )
+
+
+@app.route("/results")
+def results_page():
+    pf       = _load_portfolio()
+    stats    = _load_stats()
+    positions = pf.get("positions", [])
+
+    resolved = [p for p in reversed(positions) if p.get("status") in ("won", "lost", "expired")]
+    skips    = [r for r in stats.get("records", []) if r.get("status") == "skip"]
+
+    won      = [p for p in resolved if p.get("status") == "won"]
+    lost     = [p for p in resolved if p.get("status") == "lost"]
+    total_pnl = sum(p.get("pnl_usd") or 0 for p in resolved)
+    win_rate  = round(len(won) / len(resolved) * 100, 1) if resolved else 0.0
+
+    avg_win  = round(sum(p.get("pnl_usd",0) for p in won)  / len(won),  2) if won  else 0.0
+    avg_loss = round(sum(p.get("pnl_usd",0) for p in lost) / len(lost), 2) if lost else 0.0
+
+    skip_reasons = {}
+    for r in skips:
+        reason = r.get("reason", "unknown")
+        skip_reasons[reason] = skip_reasons.get(reason, 0) + 1
+    skip_breakdown = sorted(skip_reasons.items(), key=lambda x: -x[1])
+
+    tmpl = """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>FastLoop Results</title>
+  <meta http-equiv="refresh" content="60">
+  <style>{{ css | safe }}</style>
+</head>
+<body>
+  {{ nav | safe }}
+
+  <h2>Results Summary</h2>
+  <div class="cards">
+    <div class="card">
+      <div class="label">Resolved Trades</div>
+      <div class="value blue">{{ resolved|length }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Won</div>
+      <div class="value green">{{ won_count }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Lost</div>
+      <div class="value red">{{ lost_count }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Win Rate</div>
+      <div class="value {{ 'green' if win_rate >= 50 else 'red' }}">{{ win_rate }}%</div>
+    </div>
+    <div class="card">
+      <div class="label">Total P&L</div>
+      <div class="value {{ 'pnl-pos' if total_pnl >= 0 else 'pnl-neg' }}">${{ "%+.2f"|format(total_pnl) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Win</div>
+      <div class="value green">${{ "%+.2f"|format(avg_win) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Avg Loss</div>
+      <div class="value red">${{ "%+.2f"|format(avg_loss) }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Skipped</div>
+      <div class="value grey">{{ skips|length }}</div>
+    </div>
+  </div>
+
+  <h2>Resolved Positions</h2>
+  {% if resolved %}
+  <table>
+    <thead>
+      <tr>
+        <th>Market</th>
+        <th>Side</th>
+        <th>Entry Price</th>
+        <th>Shares</th>
+        <th>Cost</th>
+        <th>Payout</th>
+        <th>P&L</th>
+        <th>Result</th>
+        <th>Entered</th>
+        <th>Resolved</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for p in resolved %}
+      {% set pnl = p.pnl_usd or 0 %}
+      {% set payout = (p.shares if p.status == 'won' else 0)|round(2) %}
+      <tr>
+        <td class="ellipsis" title="{{ p.market }}">{{ p.market[:55] }}{% if p.market|length > 55 %}…{% endif %}</td>
+        <td><span class="badge badge-{{ p.side.lower() }}">{{ p.side }}</span></td>
+        <td>${{ "%.3f"|format(p.entry_price) }}</td>
+        <td>{{ "%.1f"|format(p.shares) }}</td>
+        <td class="blue">${{ "%.2f"|format(p.cost_usd) }}</td>
+        <td class="{{ 'green' if p.status == 'won' else 'grey' }}">
+          ${{ "%.2f"|format(payout) if p.status == 'won' else '0.00' }}
+        </td>
+        <td class="{{ 'pnl-pos' if pnl > 0 else 'pnl-neg' }}">${{ "%+.2f"|format(pnl) }}</td>
+        <td><span class="badge badge-{{ p.status }}">{{ p.status.upper() }}</span></td>
+        <td class="grey">{{ p.entered_at[:16].replace("T"," ") }}</td>
+        <td class="grey">{{ (p.resolved_at or "—")[:16].replace("T"," ") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="grey" style="padding:20px 0">No resolved positions yet.</p>
+  {% endif %}
+
+  <h2>Skip Breakdown</h2>
+  {% if skip_breakdown %}
+  <table style="max-width:500px">
+    <thead><tr><th>Reason</th><th>Count</th></tr></thead>
+    <tbody>
+    {% for reason, count in skip_breakdown %}
+      <tr>
+        <td class="grey">{{ reason }}</td>
+        <td class="yellow">{{ count }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p class="grey" style="padding:20px 0">No skips recorded yet.</p>
+  {% endif %}
+
+  <h2>All Skip Records</h2>
+  {% if skips %}
+  <table>
+    <thead>
+      <tr><th>Time (UTC)</th><th>Asset</th><th>YES Price</th><th>Momentum%</th><th>Expires</th><th>Reason</th></tr>
+    </thead>
+    <tbody>
+    {% for r in skips %}
+      <tr>
+        <td class="grey">{{ r.get('timestamp','')[:16].replace('T',' ') }}</td>
+        <td>{{ r.get('asset','—') }}</td>
+        <td>{{ "$%.3f"|format(r.yes_price) if r.get('yes_price') is not none else "—" }}</td>
+        <td class="{{ 'green' if (r.get('momentum_pct') or 0) >= 0 else 'red' }}">
+          {{ "%+.3f"|format(r.momentum_pct) if r.get('momentum_pct') is not none else "—" }}
+        </td>
+        <td class="grey">{{ r.seconds_to_expiry|int ~ "s" if r.get('seconds_to_expiry') is not none else "—" }}</td>
+        <td class="grey">{{ r.get('reason','—') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>"""
+
+    return render_template_string(
+        tmpl,
+        css            = CSS,
+        nav            = NAV.format(now=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        resolved       = resolved,
+        won_count      = len(won),
+        lost_count     = len(lost),
+        win_rate       = win_rate,
+        total_pnl      = total_pnl,
+        avg_win        = avg_win,
+        avg_loss       = avg_loss,
+        skips          = list(reversed(skips[:200])),
+        skip_breakdown = skip_breakdown,
     )
 
 
