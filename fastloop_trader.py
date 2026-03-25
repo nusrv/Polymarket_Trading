@@ -766,17 +766,26 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     best = find_best_fast_market(markets)
     if not best:
         now = datetime.now(timezone.utc)
+        remaining_times = []
         for m in markets[:40]:
             remaining = _remaining_seconds(m, now)
             if remaining is None:
                 log(f"  Skipped: {m['question'][:50]}... (no end_time available)")
             elif m.get("is_live_now") is False:
                 log(f"  Skipped: {m['question'][:50]}... (not live yet; {remaining:.0f}s until expiry)")
+                remaining_times.append(remaining)
             else:
                 log(f"  Skipped: {m['question'][:50]}... ({remaining:.0f}s remaining)")
+                remaining_times.append(remaining)
+        # Find closest upcoming market to help diagnose timing gaps
+        upcoming = [t for t in remaining_times if t > 0]
+        nearest_secs = int(min(upcoming)) if upcoming else None
+        if nearest_secs is not None:
+            log(f"  Nearest upcoming market: {nearest_secs}s away")
         log(f"  No live tradeable markets among {len(markets)} found — waiting for next window")
-        print(f"📊 Summary: No tradeable markets (0/{len(markets)} live with enough time)")
-        log_skip("no tradeable markets", markets_found=len(markets))
+        print(f"📊 Summary: No tradeable markets (0/{len(markets)} found, nearest={nearest_secs}s)")
+        log_skip("no tradeable markets", markets_found=len(markets),
+                 nearest_market_secs=nearest_secs)
         return
 
     end_time = best.get("end_time")

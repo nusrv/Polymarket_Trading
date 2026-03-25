@@ -896,7 +896,16 @@ def results_page():
   {% if skips %}
   <table>
     <thead>
-      <tr><th>Time (local)</th><th>Asset</th><th>YES Price</th><th>Momentum%</th><th>Expires</th><th>Reason</th></tr>
+      <tr>
+        <th>Time ({{ tz_offset }})</th>
+        <th>Asset</th>
+        <th>YES Price</th>
+        <th>Momentum%</th>
+        <th>Expires</th>
+        <th>Markets Found</th>
+        <th>Nearest (s)</th>
+        <th>Reason</th>
+      </tr>
     </thead>
     <tbody>
     {% for r in skips %}
@@ -908,6 +917,12 @@ def results_page():
           {{ "%+.3f"|format(r.momentum_pct) if r.get('momentum_pct') is not none else "—" }}
         </td>
         <td class="grey">{{ r.seconds_to_expiry|int ~ "s" if r.get('seconds_to_expiry') is not none else "—" }}</td>
+        <td class="{{ 'yellow' if r.get('markets_found', 1) == 0 else 'grey' }}">
+          {{ r.get('markets_found', '—') }}
+        </td>
+        <td class="{{ 'yellow' if r.get('nearest_market_secs') is not none and r.get('nearest_market_secs') > 300 else 'grey' }}">
+          {{ r.get('nearest_market_secs', '—') }}
+        </td>
         <td class="grey">{{ r.get('reason','—') }}</td>
       </tr>
     {% endfor %}
@@ -930,6 +945,7 @@ def results_page():
         avg_loss       = avg_loss,
         skips          = list(reversed(skips[:200])),
         skip_breakdown = skip_breakdown,
+        tz_offset      = _tz_offset_label(),
     )
 
 
@@ -1065,7 +1081,61 @@ def analyze_page():
           <td class='grey'>{c.get('reason','')[:80]}</td>
         </tr>"""
 
-    cfg = data["current_config"]
+    cfg  = data["current_config"]
+    sa   = data.get("skip_analysis", {})
+
+    # Build skip analysis section HTML
+    _sa_color = "red" if sa.get("consecutive_recent", 0) >= 10 else "yellow"
+    _no_mkt_color = "red" if sa.get("no_market_pct", 0) >= 70 else "yellow"
+    skip_cards_html = f"""
+<div class="cards">
+  <div class="card">
+    <div class="label">Total Skips</div>
+    <div class="value grey">{sa.get('total_skips', 0)}</div>
+  </div>
+  <div class="card">
+    <div class="label">Skip Rate</div>
+    <div class="value yellow">{sa.get('skip_rate', 0)}%</div>
+  </div>
+  <div class="card">
+    <div class="label">Consecutive Now</div>
+    <div class="value {_sa_color}">{sa.get('consecutive_recent', 0)}</div>
+  </div>
+  <div class="card">
+    <div class="label">No Market %</div>
+    <div class="value {_no_mkt_color}">{sa.get('no_market_pct', 0)}%</div>
+  </div>
+  <div class="card">
+    <div class="label">Avg Nearest (s)</div>
+    <div class="value grey">{sa.get('avg_nearest_secs') or '—'}</div>
+  </div>
+</div>"""
+
+    # Skip reason breakdown table
+    skip_reason_rows = ""
+    for reason, count in sa.get("by_reason", []):
+        total_skip = sa.get("total_skips", 1) or 1
+        pct = round(count / total_skip * 100, 1)
+        color = "red" if reason == "no tradeable markets" else "yellow" if pct >= 20 else "grey"
+        skip_reason_rows += f"<tr><td class='grey'>{reason}</td><td class='{color}'>{count}</td><td class='{color}'>{pct}%</td></tr>"
+
+    skip_html = skip_cards_html + (
+        f"<table style='max-width:500px;margin-top:12px'><thead><tr><th>Skip Reason</th><th>Count</th><th>%</th></tr></thead><tbody>{skip_reason_rows}</tbody></table>"
+        if skip_reason_rows else "<p class='grey' style='padding:10px 0'>No skips recorded yet.</p>"
+    )
+
+    # Alert if "no tradeable markets" dominates
+    no_mkt_pct = sa.get("no_market_pct", 0)
+    consecutive = sa.get("consecutive_recent", 0)
+    skip_alert = ""
+    if no_mkt_pct >= 50:
+        skip_alert = f"""<div style="background:#3d1a1a;border:1px solid #f85149;border-radius:6px;
+          padding:10px 16px;margin-bottom:16px;color:#f85149;font-size:0.88em">
+          &#9888; {no_mkt_pct}% of skips are "no tradeable markets" — the bot cannot find live {cfg.get('window','5m')} markets
+          during many of its cron runs. Consider switching to the 15m window (more availability)
+          or verify Polymarket has active fast markets during your bot's running hours.
+          {f'Currently <b>{consecutive}</b> consecutive skips.' if consecutive >= 5 else ''}
+        </div>"""
 
     tmpl = f"""<!DOCTYPE html>
 <html>
@@ -1077,6 +1147,11 @@ def analyze_page():
 </head>
 <body>
   {{{{ nav | safe }}}}
+
+  {skip_alert}
+
+  <h2>Skip / Market Availability Analysis</h2>
+  {skip_html}
 
   <h2>Overall Performance</h2>
   <div class="cards">
@@ -1127,7 +1202,7 @@ def analyze_page():
   {_whatif_tbl(data['whatif_divergence'], 'Entry Threshold', float(cfg.get('entry_threshold', 0.05)))}
 
   <h2>Settings Change Log</h2>
-  {'<table><thead><tr><th>Time (local)</th><th>Parameter</th><th>Old Value</th><th>New Value</th><th>Source</th><th>Reason</th></tr></thead><tbody>' + changelog_html + '</tbody></table>' if changelog_html else "<p class='grey' style='padding:10px 0'>No changes recorded yet.</p>"}
+  {'<table><thead><tr><th>Time (' + _tz_offset_label() + ')</th><th>Parameter</th><th>Old Value</th><th>New Value</th><th>Source</th><th>Reason</th></tr></thead><tbody>' + changelog_html + '</tbody></table>' if changelog_html else "<p class='grey' style='padding:10px 0'>No changes recorded yet.</p>"}
 
 </body>
 </html>"""

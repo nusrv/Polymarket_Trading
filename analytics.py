@@ -422,6 +422,61 @@ def generate_recommendations(enriched, current_config):
 
 
 # ---------------------------------------------------------------------------
+# Skip analysis
+# ---------------------------------------------------------------------------
+
+def analyze_skips():
+    """
+    Summarise skip records from the database.
+    Returns breakdown by reason + market availability diagnostics.
+    """
+    try:
+        from database import load_trades
+    except Exception:
+        return {}
+
+    records = load_trades(2000)
+    skips   = [r for r in records if r.get("status") == "skip"]
+
+    if not skips:
+        return {"total_skips": 0, "by_reason": [], "no_market_pct": 0.0,
+                "avg_nearest_secs": None, "skip_rate": 0.0}
+
+    total = len(records)
+
+    # Reason breakdown
+    reason_counts = {}
+    for r in skips:
+        reason = r.get("reason", "unknown")
+        reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    by_reason = sorted(reason_counts.items(), key=lambda x: -x[1])
+
+    # Market availability stats
+    no_market_skips = [r for r in skips if r.get("reason") == "no tradeable markets"]
+    nearest_vals = [r["nearest_market_secs"] for r in no_market_skips
+                    if r.get("nearest_market_secs") is not None]
+    avg_nearest = round(sum(nearest_vals) / len(nearest_vals), 0) if nearest_vals else None
+    no_market_pct = round(len(no_market_skips) / len(skips) * 100, 1) if skips else 0.0
+
+    # Consecutive skips leading up to the most recent trade
+    consecutive_recent = 0
+    for r in records:
+        if r.get("status") == "skip":
+            consecutive_recent += 1
+        else:
+            break
+
+    return {
+        "total_skips":         len(skips),
+        "skip_rate":           round(len(skips) / total * 100, 1) if total else 0.0,
+        "by_reason":           by_reason,
+        "no_market_pct":       no_market_pct,
+        "avg_nearest_secs":    avg_nearest,
+        "consecutive_recent":  consecutive_recent,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Full analysis bundle
 # ---------------------------------------------------------------------------
 
@@ -452,4 +507,5 @@ def get_full_analysis():
         "recommendations":    generate_recommendations(enriched, config),
         "change_log":         get_change_log(20),
         "current_config":     config,
+        "skip_analysis":      analyze_skips(),
     }
