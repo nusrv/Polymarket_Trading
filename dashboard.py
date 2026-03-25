@@ -918,12 +918,15 @@ def analyze_page():
             else:
                 best_in_whatif = next((x for x in rows if x["win_rate"] == max_wr and x["trades"] >= 3), None)
                 if best_in_whatif and not is_current:
-                    diff = r["win_rate"] - current_val
-                    h += f"<td><form method='POST' action='/apply-setting' style='display:inline'>"
-                    h += f"<input type='hidden' name='param' value='{param_label.lower().replace(' ','_').replace('min_','').replace('threshold','')}'>"
-                    h += f"<input type='hidden' name='value' value='{r['threshold']}'>"
-                    h += f"<input type='hidden' name='reason' value='What-if analysis: win rate {r[\"win_rate\"]}% at threshold {r[\"threshold\"]}'>"
-                    h += f"<button type='submit' class='apply-btn'>Apply</button></form></td>"
+                    r_wr        = r["win_rate"]
+                    r_threshold = r["threshold"]
+                    r_reason    = f"What-if analysis: win rate {r_wr}% at threshold {r_threshold}"
+                    param_key   = param_label.lower().replace(" ", "_").replace("min_", "").replace("threshold", "")
+                    h += "<td><form method='POST' action='/apply-setting' style='display:inline'>"
+                    h += f"<input type='hidden' name='param' value='{param_key}'>"
+                    h += f"<input type='hidden' name='value' value='{r_threshold}'>"
+                    h += f"<input type='hidden' name='reason' value='{r_reason}'>"
+                    h += "<button type='submit' class='apply-btn'>Apply</button></form></td>"
                 else:
                     h += "<td>—</td>"
             h += "</tr>"
