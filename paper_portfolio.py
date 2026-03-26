@@ -231,26 +231,52 @@ def _lookup_token_by_question(question):
     """
     Find YES CLOB token ID from Gamma API by market question text.
     Used when Simmer SDK markets don't include polymarket_token_id.
+    Tries multiple query strategies.
     """
     if not question:
         return None
-    data = _get(f"{GAMMA_API}/markets?question={quote(question)}&limit=10")
-    if not data:
+
+    def _extract_token(markets):
+        for m in markets:
+            if m.get("question", "").strip().lower() != question.strip().lower():
+                continue
+            raw = m.get("clobTokenIds") or m.get("clob_token_ids") or "[]"
+            if isinstance(raw, str):
+                try:
+                    tokens = json.loads(raw)
+                except Exception:
+                    tokens = []
+            else:
+                tokens = list(raw)
+            if tokens:
+                return tokens[0]
         return None
-    markets = data if isinstance(data, list) else data.get("markets", [])
-    for m in markets:
-        if m.get("question", "").strip().lower() != question.strip().lower():
-            continue
-        raw = m.get("clobTokenIds") or m.get("clob_token_ids") or "[]"
-        if isinstance(raw, str):
-            try:
-                tokens = json.loads(raw)
-            except Exception:
-                tokens = []
-        else:
-            tokens = list(raw)
-        if tokens:
-            return tokens[0]
+
+    # Strategy 1: exact question filter
+    data = _get(f"{GAMMA_API}/markets?question={quote(question)}&limit=10")
+    if data:
+        markets = data if isinstance(data, list) else data.get("markets", [])
+        result = _extract_token(markets)
+        if result:
+            return result
+
+    # Strategy 2: keyword search (first 40 chars avoids URL length issues)
+    keywords = quote(question[:40])
+    data = _get(f"{GAMMA_API}/markets?q={keywords}&closed=true&limit=50")
+    if data:
+        markets = data if isinstance(data, list) else data.get("markets", [])
+        result = _extract_token(markets)
+        if result:
+            return result
+
+    # Strategy 3: fetch recent closed crypto markets and match locally
+    data = _get(f"{GAMMA_API}/markets?tag=crypto&closed=true&order=endDate&ascending=false&limit=200")
+    if data:
+        markets = data if isinstance(data, list) else data.get("markets", [])
+        result = _extract_token(markets)
+        if result:
+            return result
+
     return None
 
 
@@ -268,18 +294,21 @@ def refresh_positions():
     changed   = False
 
     for pos in portfolio["positions"]:
-        if pos["status"] != "open":
+        # Re-examine open positions and previously-unresolved expired ones
+        if pos["status"] == "open":
+            # Check if end_time has passed
+            end_time_str = pos.get("end_time")
+            if end_time_str:
+                try:
+                    end_dt = datetime.fromisoformat(str(end_time_str).replace("Z", "+00:00"))
+                    if end_dt > now:
+                        continue   # still live
+                except Exception:
+                    pass
+        elif pos["status"] == "expired" and pos.get("pnl_usd") == 0.0:
+            pass  # previously stuck — retry resolution
+        else:
             continue
-
-        # Check if end_time has passed
-        end_time_str = pos.get("end_time")
-        if end_time_str:
-            try:
-                end_dt = datetime.fromisoformat(str(end_time_str).replace("Z", "+00:00"))
-                if end_dt > now:
-                    continue   # still live
-            except Exception:
-                pass
 
         # Market expired — query resolution
         yes_token_id = pos.get("yes_token_id")
@@ -302,10 +331,11 @@ def refresh_positions():
                 pnl = round(-pos["cost_usd"], 4)
                 pos["status"] = "lost"
 
+            prev_pnl = pos.get("pnl_usd") or 0.0  # subtract previously recorded value (e.g. 0.0 from expired)
             pos["pnl_usd"]    = pnl
             pos["resolved_at"] = now.isoformat()
             portfolio["resolved_pnl_usd"] = round(
-                portfolio.get("resolved_pnl_usd", 0.0) + pnl, 4
+                portfolio.get("resolved_pnl_usd", 0.0) + pnl - prev_pnl, 4
             )
         else:
             # Expired but resolution not available yet — mark expired
