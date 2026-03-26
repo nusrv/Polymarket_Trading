@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 
 ROOT           = Path(__file__).parent
 PORTFOLIO_FILE = ROOT / "data" / "paper_portfolio.json"
@@ -226,6 +227,33 @@ def _check_resolution(yes_token_id):
     return None
 
 
+def _lookup_token_by_question(question):
+    """
+    Find YES CLOB token ID from Gamma API by market question text.
+    Used when Simmer SDK markets don't include polymarket_token_id.
+    """
+    if not question:
+        return None
+    data = _get(f"{GAMMA_API}/markets?question={quote(question)}&limit=10")
+    if not data:
+        return None
+    markets = data if isinstance(data, list) else data.get("markets", [])
+    for m in markets:
+        if m.get("question", "").strip().lower() != question.strip().lower():
+            continue
+        raw = m.get("clobTokenIds") or m.get("clob_token_ids") or "[]"
+        if isinstance(raw, str):
+            try:
+                tokens = json.loads(raw)
+            except Exception:
+                tokens = []
+        else:
+            tokens = list(raw)
+        if tokens:
+            return tokens[0]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Refresh open positions
 # ---------------------------------------------------------------------------
@@ -254,7 +282,13 @@ def refresh_positions():
                 pass
 
         # Market expired — query resolution
-        yes_resolution = _check_resolution(pos.get("yes_token_id"))
+        yes_token_id = pos.get("yes_token_id")
+        if not yes_token_id:
+            yes_token_id = _lookup_token_by_question(pos.get("market", ""))
+            if yes_token_id:
+                pos["yes_token_id"] = yes_token_id  # cache so future cycles skip the lookup
+                changed = True
+        yes_resolution = _check_resolution(yes_token_id)
 
         if yes_resolution is not None:
             # yes_resolution: 1.0 = YES won, 0.0 = NO won
