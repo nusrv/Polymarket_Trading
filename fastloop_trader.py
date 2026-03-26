@@ -38,6 +38,7 @@ except ImportError:
 
 CONFIG_SCHEMA = {
     "entry_threshold": {"default": 0.05, "env": "SIMMER_SPRINT_ENTRY", "type": float},
+    "yes_entry_threshold": {"default": 0.10, "env": "SIMMER_SPRINT_YES_ENTRY", "type": float},
     "min_momentum_pct": {"default": 0.5, "env": "SIMMER_SPRINT_MOMENTUM", "type": float},
     "max_position": {"default": 5.0, "env": "SIMMER_SPRINT_MAX_POSITION", "type": float},
     "signal_source": {"default": "binance", "env": "SIMMER_SPRINT_SIGNAL", "type": str},
@@ -143,7 +144,8 @@ _env_alias_override(cfg, "daily_budget", [
     "SIMMER_SPRINT_DAILY_BUDGET",
 ], float)
 
-ENTRY_THRESHOLD = cfg["entry_threshold"]
+ENTRY_THRESHOLD     = cfg["entry_threshold"]
+YES_ENTRY_THRESHOLD = cfg["yes_entry_threshold"]
 MIN_MOMENTUM_PCT = cfg["min_momentum_pct"]
 MAX_POSITION_USD = cfg["max_position"]
 AUTOMATON_MAX = os.environ.get("AUTOMATON_MAX_BET")
@@ -722,7 +724,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
     log(f"\n⚙️  Configuration:")
     log(f"  Asset:            {ASSET}")
     log(f"  Window:           {WINDOW}")
-    log(f"  Entry threshold:  {ENTRY_THRESHOLD} (min divergence from 50¢)")
+    log(f"  Entry threshold:  {ENTRY_THRESHOLD} NO / {YES_ENTRY_THRESHOLD} YES (min divergence from 50¢)")
     log(f"  Min momentum:     {MIN_MOMENTUM_PCT}% (min price move)")
     log(f"  Max position:     ${MAX_POSITION_USD:.2f}")
     log(f"  Signal source:    {SIGNAL_SOURCE}")
@@ -851,7 +853,7 @@ def run_fast_market_strategy(dry_run=True, positions_only=False, show_config=Fal
 
     if direction == "up":
         side = "yes"
-        divergence = 0.50 + ENTRY_THRESHOLD - market_yes_price
+        divergence = 0.50 + YES_ENTRY_THRESHOLD - market_yes_price  # tighter filter for YES
         trade_rationale = f"{ASSET} up {momentum['momentum_pct']:+.3f}% but YES only ${market_yes_price:.3f}"
     else:
         side = "no"

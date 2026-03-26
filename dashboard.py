@@ -853,7 +853,7 @@ def settings_page():
     if request.method == "POST":
         cfg   = _load_config()
         types = {
-            "entry_threshold": float, "min_momentum_pct": float,
+            "entry_threshold": float, "yes_entry_threshold": float, "min_momentum_pct": float,
             "max_position": float, "signal_source": str, "lookback_minutes": int,
             "min_time_remaining": int, "asset": str, "window": str,
             "volume_confidence": lambda v: v.lower() in ("true", "1", "yes"),
@@ -873,8 +873,10 @@ def settings_page():
     cfg = _load_config()
 
     SETTINGS_DEF = [
-        dict(key="entry_threshold",    label="Entry Threshold",     type="number", step="0.01",
-             env_var="SIMMER_SPRINT_ENTRY",        hint="Min price divergence from 50¢ to trigger a trade (e.g. 0.05 = 5¢)"),
+        dict(key="entry_threshold",    label="NO Entry Threshold",  type="number", step="0.01",
+             env_var="SIMMER_SPRINT_ENTRY",        hint="Min divergence from 50¢ for NO trades (e.g. 0.05 = 5¢)"),
+        dict(key="yes_entry_threshold", label="YES Entry Threshold", type="number", step="0.01",
+             env_var="SIMMER_SPRINT_YES_ENTRY",    hint="Min divergence from 50¢ for YES trades — keep higher than NO (e.g. 0.10)"),
         dict(key="min_momentum_pct",   label="Min Momentum %",      type="number", step="0.01",
              env_var="SIMMER_SPRINT_MOMENTUM",     hint="Min BTC/ETH/SOL % move required (e.g. 0.03 = 0.03%)"),
         dict(key="max_position",       label="Max Position $",      type="number", step="1",

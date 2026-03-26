@@ -6,7 +6,8 @@
   "lookback_minutes": 15,
   "min_time_remaining": 60,
   "asset": "BTC",
-  "window": "15m",
+  "window": "5m",
+  "yes_entry_threshold": 0.10,
   "volume_confidence": false,
   "daily_budget": 50.0,
   "display_tz": "Asia/Amman"
