@@ -1266,6 +1266,14 @@ def health():
     return "ok", 200
 
 
+@app.route("/admin/reset-portfolio", methods=["POST"])
+def reset_portfolio_route():
+    from paper_portfolio import reset_portfolio
+    balance = float(request.form.get("balance", 100.0))
+    reset_portfolio(starting_balance=balance)
+    return f"Portfolio reset to ${balance:.2f}", 200
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
