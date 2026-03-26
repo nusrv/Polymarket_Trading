@@ -284,27 +284,50 @@ PORTFOLIO_TEMPLATE = """
   <meta charset="utf-8">
   <title>FastLoop Portfolio</title>
   <meta http-equiv="refresh" content="60">
-  <style>{{ css | safe }}</style>
+  <style>
+    {{ css | safe }}
+    .fund-box { background:#161b22;border:1px solid #30363d;border-radius:8px;padding:18px 24px;margin-bottom:24px;max-width:520px; }
+    .fund-box h3 { margin:0 0 14px;font-size:1em;color:#8b949e; }
+    .fund-row { display:flex;gap:10px;align-items:center;margin-bottom:10px; }
+    .fund-row label { color:#8b949e;font-size:0.85em;width:90px;flex-shrink:0; }
+    .fund-row input, .fund-row select {
+      background:#0d1117;border:1px solid #30363d;color:#e6edf3;
+      padding:6px 10px;border-radius:5px;font-family:monospace;font-size:0.9em;width:160px;
+    }
+    .fund-row input[type=text] { width:200px; }
+    .btn-dep  { background:#238636;color:#fff;border:none;padding:7px 18px;border-radius:6px;cursor:pointer;font-size:0.9em; }
+    .btn-dep:hover { background:#2ea043; }
+    .btn-with { background:#b62324;color:#fff;border:none;padding:7px 18px;border-radius:6px;cursor:pointer;font-size:0.9em; }
+    .btn-with:hover { background:#cf3232; }
+    .filter-bar { display:flex;gap:6px;margin-bottom:16px;align-items:center;flex-wrap:wrap; }
+    .filter-bar button { background:#161b22;border:1px solid #30363d;color:#8b949e;
+      padding:5px 14px;border-radius:5px;cursor:pointer;font-size:0.82em;font-family:monospace; }
+    .filter-bar button.active { background:#1f6feb;border-color:#1f6feb;color:#fff; }
+    .filter-bar input[type=date] { background:#161b22;border:1px solid #30363d;color:#e6edf3;
+      padding:4px 8px;border-radius:5px;font-family:monospace;font-size:0.82em; }
+  </style>
 </head>
 <body>
   {{ nav | safe }}
 
-  <h2>Paper Portfolio — All Positions</h2>
+  <h2>Paper Portfolio</h2>
+
+  <!-- Summary cards -->
   <div class="cards">
     <div class="card">
-      <div class="label">Starting Balance</div>
+      <div class="label">Starting Capital</div>
       <div class="value white">${{ "%.2f"|format(pf.starting_balance) }}</div>
     </div>
+    {% if pf.net_funding > 0 %}
+    <div class="card">
+      <div class="label">Net Funded</div>
+      <div class="value {{ 'green' if pf.net_funding >= 0 else 'red' }}">${{ "%+.2f"|format(pf.net_funding) }}</div>
+    </div>
+    {% endif %}
     <div class="card">
       <div class="label">Portfolio Value</div>
-      <div class="value {{ 'green' if pf.portfolio_value >= pf.starting_balance else 'red' }}">
+      <div class="value {{ 'green' if pf.portfolio_value >= (pf.starting_balance + pf.net_funding) else 'red' }}">
         ${{ "%.2f"|format(pf.portfolio_value) }}
-      </div>
-    </div>
-    <div class="card">
-      <div class="label">Return</div>
-      <div class="value {{ 'green' if pf.return_pct >= 0 else 'red' }}">
-        {{ "%+.2f"|format(pf.return_pct) }}%
       </div>
     </div>
     <div class="card">
@@ -314,26 +337,27 @@ PORTFOLIO_TEMPLATE = """
       </div>
     </div>
     <div class="card">
+      <div class="label">Return</div>
+      <div class="value {{ 'green' if pf.return_pct >= 0 else 'red' }}">
+        {{ "%+.2f"|format(pf.return_pct) }}%
+      </div>
+    </div>
+    <div class="card">
       <div class="label">Win Rate</div>
       <div class="value {{ 'green' if pf.win_rate >= 50 else ('yellow' if pf.win_rate > 0 else 'grey') }}">
         {{ "%.1f"|format(pf.win_rate) }}%
       </div>
     </div>
     <div class="card">
-      <div class="label">Open</div>
-      <div class="value blue">{{ pf.open_count }}</div>
+      <div class="label">Won / Lost</div>
+      <div class="value white">
+        <span class="green">{{ pf.won_count }}</span> /
+        <span class="red">{{ pf.lost_count }}</span>
+      </div>
     </div>
     <div class="card">
-      <div class="label">Won</div>
-      <div class="value green">{{ pf.won_count }}</div>
-    </div>
-    <div class="card">
-      <div class="label">Lost</div>
-      <div class="value red">{{ pf.lost_count }}</div>
-    </div>
-    <div class="card">
-      <div class="label">Expired</div>
-      <div class="value grey">{{ pf.expired_count }}</div>
+      <div class="label">Open Exposure</div>
+      <div class="value blue">${{ "%.2f"|format(pf.open_cost) }}</div>
     </div>
     <div class="card">
       <div class="label">Traded All-Time</div>
@@ -341,8 +365,79 @@ PORTFOLIO_TEMPLATE = """
     </div>
   </div>
 
+  <!-- Fund / Withdraw wallet -->
+  <div class="fund-box">
+    <h3>Fund Wallet</h3>
+    <form method="POST" action="/portfolio/fund" style="display:contents">
+      <div class="fund-row">
+        <label>Type</label>
+        <select name="tx_type">
+          <option value="deposit">Deposit</option>
+          <option value="withdrawal">Withdrawal</option>
+        </select>
+      </div>
+      <div class="fund-row">
+        <label>Amount ($)</label>
+        <input type="number" name="amount" min="0.01" step="0.01" placeholder="e.g. 50.00" required>
+      </div>
+      <div class="fund-row">
+        <label>Note</label>
+        <input type="text" name="note" placeholder="optional label">
+      </div>
+      <div style="display:flex;gap:10px;margin-top:6px">
+        <button type="submit" name="action" value="deposit"   class="btn-dep">+ Deposit</button>
+        <button type="submit" name="action" value="withdrawal" class="btn-with">- Withdraw</button>
+      </div>
+    </form>
+    {% if fund_msg %}
+    <p style="margin:10px 0 0;color:#3fb950;font-size:0.85em">{{ fund_msg }}</p>
+    {% endif %}
+  </div>
+
+  <!-- Transaction history -->
+  {% if transactions %}
+  <h3 style="margin:0 0 10px;font-size:1em;color:#8b949e">Funding History</h3>
+  <table style="max-width:600px;margin-bottom:28px">
+    <thead>
+      <tr>
+        <th>Time ({{ tz_offset }})</th>
+        <th>Type</th>
+        <th>Amount</th>
+        <th>Note</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for t in transactions %}
+      <tr>
+        <td class="grey">{{ t.timestamp | fmt_ts }}</td>
+        <td><span class="badge {{ 'badge-won' if t.type == 'deposit' else 'badge-lost' }}">
+          {{ t.type.upper() }}</span>
+        </td>
+        <td class="{{ 'pnl-pos' if t.type == 'deposit' else 'pnl-neg' }}">
+          {{ '+' if t.type == 'deposit' else '-' }}${{ "%.2f"|format(t.amount) }}
+        </td>
+        <td class="grey">{{ t.note or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <!-- Positions with time filter -->
+  <h3 style="margin:0 0 10px;font-size:1em;color:#8b949e">Trade History</h3>
+  <div class="filter-bar">
+    <button class="active" onclick="filterRows(this,'all')">All</button>
+    <button onclick="filterRows(this,'1d')">Day</button>
+    <button onclick="filterRows(this,'7d')">7 Days</button>
+    <button onclick="filterRows(this,'30d')">1 Month</button>
+    <span style="color:#8b949e;font-size:0.82em">Custom:</span>
+    <input type="date" id="from_date" onchange="filterCustom()">
+    <span style="color:#8b949e;font-size:0.82em">to</span>
+    <input type="date" id="to_date" onchange="filterCustom()">
+  </div>
+
   {% if positions %}
-  <table>
+  <table id="pos-table">
     <thead>
       <tr>
         <th>Market</th>
@@ -359,7 +454,7 @@ PORTFOLIO_TEMPLATE = """
     <tbody>
     {% for p in positions %}
       {% set pnl = p.pnl_usd or 0 %}
-      <tr>
+      <tr data-ts="{{ p.entered_at }}">
         <td class="ellipsis" title="{{ p.market }}">
           {{ p.market[:55] }}{% if p.market|length > 55 %}…{% endif %}
         </td>
@@ -379,10 +474,39 @@ PORTFOLIO_TEMPLATE = """
     </tbody>
   </table>
   {% else %}
-    <p class="grey" style="padding:20px 0">
-      No positions yet — they appear after the first paper trade executes.
-    </p>
+    <p class="grey" style="padding:20px 0">No positions yet.</p>
   {% endif %}
+
+<script>
+function filterRows(btn, range) {
+  document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('from_date').value = '';
+  document.getElementById('to_date').value = '';
+  const now = new Date();
+  let cutoff = null;
+  if (range === '1d')  cutoff = new Date(now - 86400000);
+  if (range === '7d')  cutoff = new Date(now - 7*86400000);
+  if (range === '30d') cutoff = new Date(now - 30*86400000);
+  document.querySelectorAll('#pos-table tbody tr').forEach(row => {
+    if (!cutoff) { row.style.display = ''; return; }
+    const ts = new Date(row.dataset.ts);
+    row.style.display = ts >= cutoff ? '' : 'none';
+  });
+}
+function filterCustom() {
+  document.querySelectorAll('.filter-bar button').forEach(b => b.classList.remove('active'));
+  const from = document.getElementById('from_date').value;
+  const to   = document.getElementById('to_date').value;
+  const fromDt = from ? new Date(from) : null;
+  const toDt   = to   ? new Date(to + 'T23:59:59') : null;
+  document.querySelectorAll('#pos-table tbody tr').forEach(row => {
+    const ts = new Date(row.dataset.ts);
+    const show = (!fromDt || ts >= fromDt) && (!toDt || ts <= toDt);
+    row.style.display = show ? '' : 'none';
+  });
+}
+</script>
 </body>
 </html>
 """
@@ -505,10 +629,10 @@ def _load_portfolio():
     except Exception as e:
         print(f"  [WARN] Failed to load portfolio: {e}")
         return {
-            "starting_balance": 50.0, "total_invested": 0.0, "open_cost": 0.0,
+            "starting_balance": 100.0, "net_funding": 0.0, "total_invested": 0.0, "open_cost": 0.0,
             "open_count": 0, "won_count": 0, "lost_count": 0, "expired_count": 0,
-            "resolved_pnl": 0.0, "portfolio_value": 50.0,
-            "return_pct": 0.0, "win_rate": 0.0, "positions": [],
+            "resolved_pnl": 0.0, "portfolio_value": 100.0,
+            "return_pct": 0.0, "win_rate": 0.0, "positions": [], "transactions": [],
         }
 
 
@@ -684,15 +808,42 @@ def index():
 def portfolio():
     pf        = _load_portfolio()
     positions = list(reversed(pf.get("positions", [])))
+    txns      = pf.get("transactions", [])
+
+    class _Tx(dict):
+        def __getattr__(self, k):
+            return self.get(k, "")
 
     return render_template_string(
         PORTFOLIO_TEMPLATE,
-        css       = CSS,
-        nav       = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
-        pf        = _Obj(pf),
-        positions = positions,
-        tz_offset = _tz_offset_label(),
+        css          = CSS,
+        nav          = NAV.format(now=_now_local().strftime("%Y-%m-%d %H:%M") + " (" + _tz_label() + ")"),
+        pf           = _Obj(pf),
+        positions    = positions,
+        transactions = [_Tx(t) for t in txns],
+        tz_offset    = _tz_offset_label(),
+        fund_msg     = request.args.get("msg", ""),
     )
+
+
+@app.route("/portfolio/fund", methods=["POST"])
+def portfolio_fund():
+    from paper_portfolio import add_transaction
+    tx_type = request.form.get("action") or request.form.get("tx_type", "deposit")
+    try:
+        amount = float(request.form.get("amount", 0))
+    except ValueError:
+        amount = 0.0
+    note = request.form.get("note", "").strip()
+
+    if amount <= 0:
+        return redirect("/portfolio?msg=Invalid+amount")
+    if tx_type not in ("deposit", "withdrawal"):
+        tx_type = "deposit"
+
+    add_transaction(tx_type, amount, note)
+    label = "Deposited" if tx_type == "deposit" else "Withdrawn"
+    return redirect(f"/portfolio?msg={label}+%24{amount:.2f}+successfully")
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -834,8 +985,22 @@ def results_page():
   </div>
 
   <h2>Resolved Positions</h2>
+  <div style="display:flex;gap:6px;margin-bottom:14px;align-items:center;flex-wrap:wrap">
+    <button class="flt-btn active" onclick="flt(this,'all')">All</button>
+    <button class="flt-btn" onclick="flt(this,'1d')">Day</button>
+    <button class="flt-btn" onclick="flt(this,'7d')">7 Days</button>
+    <button class="flt-btn" onclick="flt(this,'30d')">1 Month</button>
+    <span style="color:#8b949e;font-size:0.82em">Custom:</span>
+    <input type="date" id="rf" onchange="fltC()" style="background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;border-radius:5px;font-family:monospace;font-size:0.82em">
+    <span style="color:#8b949e;font-size:0.82em">to</span>
+    <input type="date" id="rt" onchange="fltC()" style="background:#161b22;border:1px solid #30363d;color:#e6edf3;padding:4px 8px;border-radius:5px;font-family:monospace;font-size:0.82em">
+  </div>
+  <style>
+    .flt-btn{background:#161b22;border:1px solid #30363d;color:#8b949e;padding:5px 14px;border-radius:5px;cursor:pointer;font-size:0.82em;font-family:monospace}
+    .flt-btn.active{background:#1f6feb;border-color:#1f6feb;color:#fff}
+  </style>
   {% if resolved %}
-  <table>
+  <table id="res-tbl">
     <thead>
       <tr>
         <th>Market</th>
@@ -846,15 +1011,15 @@ def results_page():
         <th>Payout</th>
         <th>P&L</th>
         <th>Result</th>
-        <th>Entered</th>
-        <th>Resolved</th>
+        <th>Entered ({{ tz_offset }})</th>
+        <th>Resolved ({{ tz_offset }})</th>
       </tr>
     </thead>
     <tbody>
     {% for p in resolved %}
       {% set pnl = p.pnl_usd or 0 %}
       {% set payout = (p.shares if p.status == 'won' else 0)|round(2) %}
-      <tr>
+      <tr data-ts="{{ p.entered_at }}">
         <td class="ellipsis" title="{{ p.market }}">{{ p.market[:55] }}{% if p.market|length > 55 %}…{% endif %}</td>
         <td><span class="badge badge-{{ p.side.lower() }}">{{ p.side }}</span></td>
         <td>${{ "%.3f"|format(p.entry_price) }}</td>
@@ -871,6 +1036,29 @@ def results_page():
     {% endfor %}
     </tbody>
   </table>
+  <script>
+  function flt(btn,r){
+    document.querySelectorAll('.flt-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('rf').value='';document.getElementById('rt').value='';
+    const now=new Date();let cut=null;
+    if(r==='1d')cut=new Date(now-86400000);
+    if(r==='7d')cut=new Date(now-7*86400000);
+    if(r==='30d')cut=new Date(now-30*86400000);
+    document.querySelectorAll('#res-tbl tbody tr').forEach(row=>{
+      row.style.display=(!cut||new Date(row.dataset.ts)>=cut)?'':'none';
+    });
+  }
+  function fltC(){
+    document.querySelectorAll('.flt-btn').forEach(b=>b.classList.remove('active'));
+    const f=document.getElementById('rf').value,t=document.getElementById('rt').value;
+    const fd=f?new Date(f):null,td=t?new Date(t+'T23:59:59'):null;
+    document.querySelectorAll('#res-tbl tbody tr').forEach(row=>{
+      const ts=new Date(row.dataset.ts);
+      row.style.display=((!fd||ts>=fd)&&(!td||ts<=td))?'':'none';
+    });
+  }
+  </script>
   {% else %}
     <p class="grey" style="padding:20px 0">No resolved positions yet.</p>
   {% endif %}

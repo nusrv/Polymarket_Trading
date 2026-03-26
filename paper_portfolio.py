@@ -1,8 +1,8 @@
 """
 FastLoop Paper Portfolio Tracker
 =================================
-Simulates a $50 starting balance trading FastLoop paper trades.
-Resolves positions via Polymarket Gamma API (same approach as AI Bot).
+Tracks a starting balance with deposit/withdraw history and paper trades.
+Portfolio value = starting_balance + net_funding + resolved_pnl
 
 Persistence backends (priority order):
   1. PostgreSQL — when DATABASE_URL env var is set (Railway managed DB)
@@ -23,7 +23,7 @@ ROOT           = Path(__file__).parent
 PORTFOLIO_FILE = ROOT / "data" / "paper_portfolio.json"
 GAMMA_API      = "https://gamma-api.polymarket.com"
 
-STARTING_BALANCE = float(os.environ.get("PAPER_BALANCE", "50.0"))
+STARTING_BALANCE = float(os.environ.get("PAPER_BALANCE", "100.0"))
 DATABASE_URL     = os.environ.get("DATABASE_URL")
 
 
@@ -116,15 +116,22 @@ def _pg_save(data):
 def load_portfolio():
     pg = _pg_load()
     if pg is not None:
+        # Ensure transactions key exists (backwards compat)
+        if "transactions" not in pg:
+            pg["transactions"] = []
         return pg
     if PORTFOLIO_FILE.exists():
         try:
-            return json.loads(PORTFOLIO_FILE.read_text())
+            data = json.loads(PORTFOLIO_FILE.read_text())
+            if "transactions" not in data:
+                data["transactions"] = []
+            return data
         except Exception:
             pass
     data = {
         "starting_balance": STARTING_BALANCE,
         "positions":        [],
+        "transactions":     [],
         "resolved_pnl_usd": 0.0,
         "created_at":       datetime.now(timezone.utc).isoformat(),
     }
@@ -169,6 +176,31 @@ def add_position(market, side, yes_token_id, entry_yes_price, shares, cost_usd, 
         "status":          "open",
         "pnl_usd":         None,
         "resolved_at":     None,
+    })
+    save_portfolio(portfolio)
+
+
+# ---------------------------------------------------------------------------
+# Fund wallet (deposit / withdraw)
+# ---------------------------------------------------------------------------
+
+def add_transaction(tx_type, amount, note=""):
+    """
+    Record a deposit or withdrawal.
+    tx_type: "deposit" | "withdrawal"
+    amount:  positive float (the absolute amount)
+    """
+    if tx_type not in ("deposit", "withdrawal"):
+        raise ValueError("tx_type must be 'deposit' or 'withdrawal'")
+    if amount <= 0:
+        raise ValueError("amount must be positive")
+
+    portfolio = load_portfolio()
+    portfolio["transactions"].append({
+        "type":      tx_type,
+        "amount":    round(amount, 2),
+        "note":      note,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     })
     save_portfolio(portfolio)
 
@@ -287,16 +319,14 @@ def _lookup_token_by_question(question):
 def refresh_positions():
     """
     Check resolution for all expired open positions.
-    Call this at dashboard load or on each bot cycle.
+    Also retries previously-unresolved 'expired' positions.
     """
     portfolio = load_portfolio()
     now       = datetime.now(timezone.utc)
     changed   = False
 
     for pos in portfolio["positions"]:
-        # Re-examine open positions and previously-unresolved expired ones
         if pos["status"] == "open":
-            # Check if end_time has passed
             end_time_str = pos.get("end_time")
             if end_time_str:
                 try:
@@ -310,17 +340,15 @@ def refresh_positions():
         else:
             continue
 
-        # Market expired — query resolution
         yes_token_id = pos.get("yes_token_id")
         if not yes_token_id:
             yes_token_id = _lookup_token_by_question(pos.get("market", ""))
             if yes_token_id:
-                pos["yes_token_id"] = yes_token_id  # cache so future cycles skip the lookup
+                pos["yes_token_id"] = yes_token_id
                 changed = True
         yes_resolution = _check_resolution(yes_token_id)
 
         if yes_resolution is not None:
-            # yes_resolution: 1.0 = YES won, 0.0 = NO won
             our_side_won = (pos["side"] == "YES" and yes_resolution == 1.0) or \
                            (pos["side"] == "NO"  and yes_resolution == 0.0)
 
@@ -331,16 +359,15 @@ def refresh_positions():
                 pnl = round(-pos["cost_usd"], 4)
                 pos["status"] = "lost"
 
-            prev_pnl = pos.get("pnl_usd") or 0.0  # subtract previously recorded value (e.g. 0.0 from expired)
-            pos["pnl_usd"]    = pnl
+            prev_pnl = pos.get("pnl_usd") or 0.0
+            pos["pnl_usd"]     = pnl
             pos["resolved_at"] = now.isoformat()
             portfolio["resolved_pnl_usd"] = round(
                 portfolio.get("resolved_pnl_usd", 0.0) + pnl - prev_pnl, 4
             )
         else:
-            # Expired but resolution not available yet — mark expired
-            pos["status"]  = "expired"
-            pos["pnl_usd"] = 0.0
+            pos["status"]      = "expired"
+            pos["pnl_usd"]     = 0.0
             pos["resolved_at"] = now.isoformat()
 
         changed = True
@@ -364,21 +391,28 @@ def get_summary():
     lost_pos    = [p for p in positions if p["status"] == "lost"]
     expired_pos = [p for p in positions if p["status"] == "expired"]
 
-    total_invested  = sum(p["cost_usd"] for p in positions)
-    won_payout      = sum(p["shares"] for p in won_pos)      # $1/share
-    resolved_pnl    = portfolio.get("resolved_pnl_usd", 0.0)
-    open_cost       = sum(p["cost_usd"] for p in open_pos)
+    total_invested = sum(p["cost_usd"] for p in positions)
+    open_cost      = sum(p["cost_usd"] for p in open_pos)
+    resolved_pnl   = portfolio.get("resolved_pnl_usd", 0.0)
 
-    # Portfolio value = cash not yet deployed + payouts from wins + open cost at risk
-    # Simplified: starting_balance + resolved_pnl - open_cost_at_risk + open_cost
-    portfolio_value = STARTING_BALANCE + resolved_pnl
-    return_pct = round(resolved_pnl / STARTING_BALANCE * 100, 2) if STARTING_BALANCE else 0.0
+    # Net funding: deposits - withdrawals
+    transactions = portfolio.get("transactions", [])
+    net_funding  = sum(
+        t["amount"] if t["type"] == "deposit" else -t["amount"]
+        for t in transactions
+    )
+
+    starting_balance = portfolio.get("starting_balance", STARTING_BALANCE)
+    portfolio_value  = starting_balance + net_funding + resolved_pnl
+    return_pct = round(resolved_pnl / (starting_balance + net_funding) * 100, 2) \
+                 if (starting_balance + net_funding) else 0.0
 
     win_rate = round(len(won_pos) / (len(won_pos) + len(lost_pos)) * 100, 1) \
                if (won_pos or lost_pos) else 0.0
 
     return {
-        "starting_balance": portfolio.get("starting_balance", STARTING_BALANCE),
+        "starting_balance": round(starting_balance, 2),
+        "net_funding":      round(net_funding, 2),
         "total_invested":   round(total_invested, 2),
         "open_cost":        round(open_cost, 2),
         "open_count":       len(open_pos),
@@ -390,6 +424,7 @@ def get_summary():
         "return_pct":       return_pct,
         "win_rate":         win_rate,
         "positions":        list(reversed(positions[-80:])),
+        "transactions":     list(reversed(transactions)),
     }
 
 
@@ -402,6 +437,7 @@ def reset_portfolio(starting_balance=None):
     data = {
         "starting_balance": balance,
         "positions":        [],
+        "transactions":     [],
         "resolved_pnl_usd": 0.0,
         "created_at":       datetime.now(timezone.utc).isoformat(),
     }
@@ -414,6 +450,7 @@ if __name__ == "__main__":
     s = get_summary()
     print(f"\nFastLoop Paper Portfolio")
     print(f"  Starting balance: ${s['starting_balance']:.2f}")
+    print(f"  Net funding:      ${s['net_funding']:+.2f}")
     print(f"  Total invested:   ${s['total_invested']:.2f}")
     print(f"  Open positions:   {s['open_count']}")
     print(f"  Won:              {s['won_count']}")
